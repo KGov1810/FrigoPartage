@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Un foyer n'est lisible que si l'on connaît son code (pas de listing possible).
+    match /foyers/{code} {
+      allow get, create: if request.auth != null;
+      allow list, update, delete: if false;
+
+      // Frigo, liste de courses et recettes du foyer.
+      match /{collection}/{docId} {
+        allow read, write: if request.auth != null
+          && collection in ['produits', 'courses', 'recettes']
+          && exists(/databases/$(database)/documents/foyers/$(code));
+      }
+    }
+  }
+}
