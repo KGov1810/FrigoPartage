@@ -308,6 +308,84 @@ export async function lookupBarcode(code) {
 }
 
 // ---------------------------------------------------------------------------
+// Rapprochement d'un ingrédient de recette avec un produit du frigo
+// ---------------------------------------------------------------------------
+
+const STOPWORDS = new Set(['de', 'du', 'des', 'la', 'le', 'les', 'au', 'aux', 'a', 'en', 'et', 'un', 'une',
+  'bio', 'avec', 'sans', 'pour', 'sur', 'the', 'and', 'of']);
+
+/** Mots significatifs d'un nom : sans accents, sans marque entre parenthèses, au singulier. */
+export function nameTokens(name) {
+  const text = String(name ?? '')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/œ/gi, 'oe').replace(/æ/gi, 'ae')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    // Mots composés gardés entiers : « demi-écrémé », « pâte à tartiner ».
+    .replace(/([a-z])\s*-\s*([a-z])/g, '$1-$2')
+    .replace(/([a-z]{3,})\s+a\s+([a-z]{3,})/g, '$1-a-$2');
+  return [...new Set(text.split(/[^a-z0-9-]+/)
+    .map((t) => t.replace(/^-+|-+$/g, ''))
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t))
+    .map((t) => (t.length > 3 ? t.replace(/[sx]$/, '') : t)))];
+}
+
+/**
+ * Score de ressemblance entre deux noms (0 = différents).
+ * Tous les mots du nom le plus court doivent figurer dans l'autre, et couvrir au moins
+ * la moitié de ses mots : « Yaourt nature » ≈ « Yaourt nature (Danone) », mais
+ * « Crème » ≠ « Crème dessert au chocolat ».
+ */
+export function nameMatchScore(a, b) {
+  const ta = nameTokens(a);
+  const tb = nameTokens(b);
+  if (!ta.length || !tb.length) return 0;
+  const [small, large] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+  const largeSet = new Set(large);
+  if (!small.every((t) => largeSet.has(t))) return 0;
+  const score = small.length / large.length;
+  return score >= 0.5 ? score : 0;
+}
+
+export function normalizeBarcode(code) {
+  return String(code ?? '').replace(/\D/g, '').replace(/^0+/, '');
+}
+
+/**
+ * Retrouve le produit du frigo correspondant à un ingrédient :
+ * 1. le produit d'origine (encore au frigo) ; 2. le même code-barres (produit racheté) ;
+ * 3. un nom équivalent (anciennes recettes, produits saisis sans code-barres).
+ * Renvoie { product, via: 'origine' | 'code-barres' | 'nom' } ou null.
+ */
+export function resolveIngredient(ingredient, products) {
+  if (!ingredient || ingredient.source === 'placard') return null;
+  if (ingredient.productId) {
+    const original = products.find((p) => p.id === ingredient.productId);
+    if (original) return { product: original, via: 'origine' };
+  }
+  const barcode = normalizeBarcode(ingredient.barcode);
+  if (barcode) {
+    const same = products.find((p) => normalizeBarcode(p.barcode) === barcode);
+    if (same) return { product: same, via: 'code-barres' };
+  }
+  let best = null;
+  let bestScore = 0;
+  for (const product of products) {
+    if (ingredient.category && ingredient.category !== 'autre' && product.category !== 'autre'
+      && product.category !== ingredient.category) continue;
+    const score = Math.max(
+      nameMatchScore(ingredient.name, product.name),
+      ingredient.productName ? nameMatchScore(ingredient.productName, product.name) : 0
+    );
+    if (score > bestScore || (score > 0 && score === bestScore && product.expiry < best.expiry)) {
+      best = product;
+      bestScore = score;
+    }
+  }
+  return best ? { product: best, via: 'nom' } : null;
+}
+
+// ---------------------------------------------------------------------------
 // Claude (API Messages, sortie structurée via un outil imposé)
 // ---------------------------------------------------------------------------
 
@@ -468,10 +546,6 @@ function promptExpiry(iso) {
   return `expire dans ${days} j`;
 }
 
-function simplify(text) {
-  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-}
-
 /**
  * priority / others : produits { id, name, quantity, category, expiry }
  * shopping : articles { name, quantity, checked }
@@ -523,16 +597,24 @@ export async function generateRecipes({ key, model, priority, others, shopping, 
     const ingredients = (r.ingredients ?? []).map((item) => {
       let source = ['stock', 'courses', 'placard', 'a_acheter'].includes(item.source) ? item.source : 'a_acheter';
       const ref = String(item.ref_stock ?? '').replace(/[[\]\s]/g, '').toUpperCase();
-      let productId = refs.get(ref) ?? null;
-      if (!productId && source === 'stock') {
-        const needle = simplify(item.nom ?? '');
-        productId = all.find((p) => {
-          const hay = simplify(p.name);
-          return needle && (hay.includes(needle) || needle.includes(hay));
-        })?.id ?? null;
+      let product = all.find((p) => p.id === refs.get(ref)) ?? null;
+      if (!product && source === 'stock') {
+        product = all
+          .map((p) => ({ p, score: nameMatchScore(item.nom, p.name) }))
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score)[0]?.p ?? null;
       }
-      if (productId) source = 'stock';
-      return { name: item.nom ?? '', quantity: item.quantite ?? '', source, productId };
+      if (product) source = 'stock';
+      return {
+        name: item.nom ?? '',
+        quantity: item.quantite ?? '',
+        source,
+        productId: product?.id ?? null,
+        // Mémorisés pour retrouver le produit s'il est racheté plus tard.
+        barcode: product?.barcode ?? '',
+        productName: product?.name ?? '',
+        category: product?.category ?? ''
+      };
     });
     return {
       id: crypto.randomUUID(),
@@ -638,21 +720,80 @@ async function barcodeReader() {
   );
 }
 
-/** Démarre la caméra et appelle onCode une seule fois. Renvoie une fonction d'arrêt. */
-export async function startBarcodeScan(video, onCode) {
-  const reader = await barcodeReader();
-  let found = false;
-  const controls = await reader.decodeFromConstraints(
-    { audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
-    video,
-    (result) => {
-      if (result && !found) {
-        found = true;
-        onCode(result.getText());
-      }
+/**
+ * Ouvre la caméra arrière dans l'élément vidéo.
+ * Gérée ici plutôt que par ZXing : si iOS refuse de lancer la vidéo, ZXing l'ignore
+ * en silence et l'écran reste noir. Renvoie { stream, playing, stop }.
+ */
+export async function startCamera(video) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw Object.assign(new Error('Caméra non disponible dans ce navigateur.'), { name: 'NotSupportedError' });
+  }
+  const attempts = [
+    { audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+    { audio: false, video: { facingMode: 'environment' } },
+    { audio: false, video: true }
+  ];
+  let stream = null;
+  let lastError = null;
+  for (const constraints of attempts) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') throw error;
     }
-  );
-  return () => controls.stop();
+  }
+  if (!stream) throw lastError ?? new Error('Caméra indisponible.');
+
+  // Indispensables sur iPhone pour lire la vidéo sans plein écran ni son.
+  video.setAttribute('playsinline', '');
+  video.setAttribute('muted', '');
+  video.muted = true;
+  video.playsInline = true;
+  video.autoplay = true;
+  video.srcObject = stream;
+
+  let playing = true;
+  try {
+    await video.play();
+  } catch {
+    playing = false; // iOS attend un toucher : l'interface proposera « Démarrer la caméra »
+  }
+  const stop = () => {
+    stream.getTracks().forEach((track) => track.stop());
+    video.pause?.();
+    video.srcObject = null;
+  };
+  return { stream, playing, stop };
+}
+
+/**
+ * Renvoie une fonction (canvas) => code | null.
+ * Utilise le détecteur natif du navigateur s'il existe, sinon ZXing.
+ */
+export async function createBarcodeDecoder() {
+  if ('BarcodeDetector' in window) {
+    try {
+      const supported = await window.BarcodeDetector.getSupportedFormats();
+      const formats = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'].filter((f) => supported.includes(f));
+      if (formats.length) {
+        const detector = new window.BarcodeDetector({ formats });
+        return async (canvas) => (await detector.detect(canvas))[0]?.rawValue ?? null;
+      }
+    } catch {
+      // on passe à ZXing
+    }
+  }
+  const reader = await barcodeReader();
+  return async (canvas) => {
+    try {
+      return reader.decodeFromCanvas(canvas).getText();
+    } catch {
+      return null; // aucun code dans cette image
+    }
+  };
 }
 
 export async function decodeBarcodeFromImage(blob) {

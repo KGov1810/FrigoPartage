@@ -4,7 +4,8 @@ Application pour deux personnes, installée sur l'écran d'accueil de chaque iPh
 
 - **Ajout de produits** : scan du code-barres (base Open Food Facts), photo analysée par Claude, lecture de la date sur l'emballage, ou saisie manuelle.
 - **Alertes** : les produits à consommer vite sont mis en avant à chaque ouverture, avec une pastille sur l'icône (voir les limites plus bas).
-- **Recettes** : Claude propose 5 recettes qui utilisent d'abord les produits qui vont périmer, complétés par le frigo et la liste de courses. Filtres : difficulté, temps total, batch cooking.
+- **Recettes** : l'app montre d'abord vos recettes déjà enregistrées réalisables avec le frigo actuel (gratuit). Sinon, Claude en propose 5 nouvelles qui utilisent d'abord les produits qui vont périmer, complétés par le frigo et la liste de courses. Filtres : difficulté, temps total, batch cooking.
+- **Recettes toujours à jour** : un produit racheté est reconnu dans les anciennes recettes grâce à son code-barres (ou, à défaut, à son nom).
 - **Produits consommés** : le rond à gauche de chaque produit, la fiche du produit, ou « J'ai cuisiné cette recette ».
 - **Partage en temps réel** entre les deux iPhone (frigo, liste de courses et recettes), via une base Firebase gratuite. Fonctionne aussi hors ligne.
 
@@ -87,17 +88,24 @@ Le nombre de jours de prévenance (0 à 7, 2 par défaut) se règle dans **Régl
 - **Ajouter** : bouton **+** → *Scanner un code-barres*, *Prendre le produit en photo* ou *Saisir à la main*. Dans la fiche, **Lire la date** photographie la date de près. **Vérifiez toujours la date proposée.**
 - **Consommé** : touchez le rond à gauche d'un produit. Un bouton **Annuler** apparaît quelques secondes.
 - **Racheter** : dans la fiche d'un produit, *Ajouter à la liste de courses*.
-- **Recettes** : les produits à consommer vite sont présélectionnés (*Choisir les produits* pour changer). Réglez les filtres, puis **Proposer 5 recettes**. Dans une recette : ajouter les ingrédients manquants aux courses, favori (étoile), partager, **J'ai cuisiné cette recette**.
+- **Recettes** : les produits à consommer vite sont présélectionnés (*Choisir les produits* pour changer). La section **Déjà dans vos recettes** liste les recettes enregistrées réalisables avec le frigo actuel (au plus deux ingrédients à se procurer), celles qui utilisent les produits à consommer vite en premier. Si aucune ne convient, **Proposer 5 nouvelles recettes**. Dans une recette : ajouter aux courses ce qui manque, favori (étoile), partager, **J'ai cuisiné cette recette**.
+- **Dans une recette**, chaque ingrédient indique où il se trouve : *Au frigo* (le produit d'origine), *Au frigo (même code-barres)* (produit racheté), *Au frigo (produit similaire)* (retrouvé par son nom, à vérifier), *Sur la liste de courses*, *Placard* ou *À acheter*. Pour profiter du rapprochement par code-barres, ajoutez vos produits en les scannant.
 - **Courses** : touchez un article pour le cocher. L'icône frigo le range au frigo avec sa date.
 
 ## Mettre à jour l'app
 
-Remplacez les fichiers sur GitHub (**Add file → Upload files**, puis *Commit changes*). Chaque iPhone charge la nouvelle version à l'ouverture suivante, sans rien perdre.
+1. Sur GitHub, ouvrez le dépôt `frigo` → **Add file → Upload files**.
+2. Glissez **tous les fichiers** de la nouvelle version (ils remplacent les anciens), puis **Commit changes**.
+3. Attendez une à deux minutes, puis sur chaque iPhone fermez complètement l'app (balayez-la vers le haut dans le sélecteur d'apps) et rouvrez-la. Si l'ancienne version s'affiche encore, recommencez une fois.
+
+Aucune donnée n'est perdue : ni le frigo, ni les recettes, ni la clé Claude.
 
 ## Limites connues
 
 - **Pas de notification quand l'app est fermée** (limite des applications web sans serveur) : voir l'étape 6. Une vraie notification quotidienne serait possible plus tard, avec une petite automatisation gratuite sur GitHub, au prix d'une configuration plus technique.
-- **Scanner** : un peu moins rapide que l'appareil photo natif. Visez bien, avec de la lumière. À défaut : *Photographier le code-barres* ou taper les chiffres.
+- **Scanner** : un peu moins rapide que l'appareil photo natif. Visez bien, avec de la lumière, le code à l'horizontale dans le cadre. À défaut : *Photographier le code-barres* ou taper les chiffres.
+- **Rapprochement par le nom** : utile mais pas infaillible (« Pommes » peut retrouver « Pommes de terre »). Il est signalé *produit similaire* ; la confirmation de « J'ai cuisiné » liste les produits retirés.
+- **Synchronisation après une pause** : quand l'app revient au premier plan, elle rétablit sa connexion (« Actualisation… » pendant une seconde). Si l'autre iPhone a fait une modification alors qu'il était hors ligne, elle n'arrive qu'une fois qu'il a retrouvé le réseau et été rouvert.
 - **Lecture de date sans Claude** : l'outil gratuit (téléchargé au premier usage, quelques Mo) est fiable sur les dates bien imprimées, beaucoup moins sur les dates embossées ou au jet d'encre. Avec une clé Claude, c'est Claude qui lit la date, bien plus fiable.
 - **Open Food Facts** : base collaborative, certains produits sont absents ou incomplets.
 - **DLC ou DDM** : l'app ne fait pas la différence. Claude a pour consigne de ne jamais utiliser un produit frais (viande, poisson, laitier, traiteur) dont la date est dépassée.
@@ -115,7 +123,9 @@ Remplacez les fichiers sur GitHub (**Add file → Upload files**, puis *Commit c
 | « Accès refusé par Firebase » | Règles non publiées : étape 1.6. |
 | « Aucun foyer ne correspond à ce code » | Renvoyez l'invitation depuis le premier iPhone (Réglages → Foyer partagé). |
 | Page GitHub « 404 » | Attendez deux minutes après l'étape 2.5 ; vérifiez que `index.html` est à la racine du dépôt, pas dans un sous-dossier. |
-| « Accès à la caméra refusé » | Réglages de l'iPhone → Safari → Caméra → Autoriser (ou Demander). |
+| « Accès à la caméra refusé » | Réglages de l'iPhone → Safari → Caméra → Autoriser (ou Demander), puis « Réessayer ». |
+| Écran noir ou « La caméra ne s'affiche pas » dans le scanner | Touchez **Démarrer la caméra**, puis **Réessayer**. Si l'image reste noire : fermez complètement l'app (balayez-la vers le haut) et rouvrez-la ; vérifiez aussi qu'aucune autre app (appel vidéo, appareil photo) n'utilise la caméra. En attendant : **Photographier le code-barres** ou tapez les chiffres. |
+| Une modification de l'autre iPhone n'apparaît pas | Réglages → **Se reconnecter**. Vérifiez que l'autre iPhone a du réseau et que l'app y a été rouverte (l'indication sous le titre doit être « Synchronisé », pas « Envoi en cours… »). |
 | « Crédit Claude épuisé » | Ajoutez du crédit sur console.anthropic.com. |
 | L'app affiche une ancienne version | Fermez-la complètement (glisser vers le haut dans le sélecteur d'apps) et rouvrez-la. |
 

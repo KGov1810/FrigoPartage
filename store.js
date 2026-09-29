@@ -6,9 +6,10 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/fireba
 import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {
   initializeFirestore, persistentLocalCache, memoryLocalCache,
-  collection, doc, setDoc, deleteDoc, getDoc, onSnapshot, writeBatch, serverTimestamp
+  collection, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, writeBatch, serverTimestamp,
+  disableNetwork, enableNetwork
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
-import { statusOf, daysUntil } from './services.js';
+import { statusOf, daysUntil, resolveIngredient, matchesFilters } from './services.js';
 
 // ---------------------------------------------------------------------------
 // Réglages locaux
@@ -59,6 +60,7 @@ export const state = {
   shopping: [],
   recipes: [],
   connected: false,
+  reconnecting: false,
   fromCache: true,
   pending: false,
   error: null,
@@ -117,8 +119,10 @@ export function syncLabel() {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return state.pending ? 'Hors ligne, envoi en attente' : 'Hors ligne';
   }
+  if (state.reconnecting) return 'Actualisation…';
   if (!state.connected || (state.fromCache && !state.lastSync)) return 'Connexion…';
   if (state.fromCache) return state.pending ? 'Hors ligne, envoi en attente' : 'Hors ligne';
+  if (state.pending) return 'Envoi en cours…';
   return 'Synchronisé';
 }
 
@@ -225,7 +229,7 @@ export async function start() {
     collection(db, 'foyers', code, name),
     { includeMetadataChanges: true },
     (snapshot) => {
-      state[key] = snapshot.docs.map((d) => map(d.id, d.data()));
+      state[key] = snapshot.docs.map((d) => map(d.id, d.data())).filter(Boolean);
       meta[key] = { fromCache: snapshot.metadata.fromCache, pending: snapshot.metadata.hasPendingWrites };
       const metas = Object.values(meta);
       state.fromCache = metas.some((m) => m.fromCache);
@@ -233,6 +237,7 @@ export async function start() {
       if (!snapshot.metadata.fromCache) {
         state.error = null;
         state.lastSync = new Date();
+        if (key === 'products' || key === 'recipes') rememberRecipeLinks(state.products);
       }
       emit(key);
     },
@@ -257,9 +262,41 @@ function stop() {
   state.connected = false;
 }
 
-/** Retour au premier plan : se rebranche si une erreur avait coupé l'écoute. */
+/**
+ * Force Firestore à rétablir sa connexion.
+ * Quand l'app passe en arrière-plan, iOS la met en pause et coupe la connexion
+ * sans prévenir. Au retour, Firestore peut mettre de longues minutes à s'en rendre
+ * compte : pendant ce temps, l'iPhone affiche d'anciennes données et garde ses
+ * propres modifications en attente. On coupe donc puis rétablit le réseau.
+ */
+let refreshing = null;
+
+async function refreshConnection() {
+  if (!db || refreshing) return refreshing;
+  state.reconnecting = true;
+  emit('sync');
+  refreshing = (async () => {
+    try {
+      await disableNetwork(db);
+      await enableNetwork(db);
+    } catch (error) {
+      console.warn('Reconnexion Firestore :', error);
+    } finally {
+      state.reconnecting = false;
+      refreshing = null;
+      emit('sync');
+    }
+  })();
+  return refreshing;
+}
+
+/** Retour au premier plan ou retour du réseau. */
 export async function resume() {
-  if (!state.connected) await start();
+  if (!state.connected) {
+    await start();
+    return;
+  }
+  await refreshConnection();
 }
 
 /** Bouton « Se reconnecter » des Réglages. */
@@ -267,6 +304,7 @@ export async function reconnect() {
   stop();
   state.error = null;
   emit('sync');
+  await refreshConnection();
   await start();
 }
 
@@ -332,6 +370,7 @@ export function leaveHousehold() {
 // ---------------------------------------------------------------------------
 
 function toProduct(id, d) {
+  if (!d.name || !d.expiry) return null; // document incomplet
   return {
     id,
     name: d.name ?? '',
@@ -347,6 +386,7 @@ function toProduct(id, d) {
 }
 
 function toShoppingItem(id, d) {
+  if (!d.name) return null; // document incomplet (ancien bug de l'article « fantôme »)
   return {
     id,
     name: d.name ?? '',
@@ -358,6 +398,7 @@ function toShoppingItem(id, d) {
 }
 
 function toRecipe(id, d) {
+  if (!d.title) return null; // document incomplet
   return { ...d, id, ingredients: d.ingredients ?? [], steps: d.steps ?? [], usedProductIds: d.usedProductIds ?? [] };
 }
 
@@ -379,7 +420,11 @@ function reportWriteError(error) {
 }
 
 function write(promise) {
-  promise.catch(reportWriteError);
+  promise.catch((error) => {
+    // Document déjà supprimé par l'autre iPhone : rien à signaler.
+    if (error?.code === 'not-found') return;
+    reportWriteError(error);
+  });
 }
 
 export function saveProduct(product) {
@@ -402,6 +447,7 @@ export function removeProducts(ids) {
   if (!canWrite()) return [];
   const removed = state.products.filter((p) => ids.includes(p.id));
   if (!removed.length) return [];
+  rememberRecipeLinks(removed);
   const batch = writeBatch(db);
   removed.forEach((p) => batch.delete(ref('produits', p.id)));
   write(batch.commit());
@@ -428,7 +474,9 @@ export function addShoppingItem(name, quantity = '') {
 export function toggleShoppingItem(id) {
   const item = state.shopping.find((i) => i.id === id);
   if (!item || !canWrite()) return;
-  write(setDoc(ref('courses', id), { checked: !item.checked }, { merge: true }));
+  // updateDoc et non setDoc : si l'autre iPhone vient de supprimer l'article,
+  // on ne recrée pas un article vide (« fantôme »).
+  write(updateDoc(ref('courses', id), { checked: !item.checked }));
 }
 
 export function deleteShoppingItems(ids) {
@@ -442,10 +490,9 @@ export function clearCheckedShopping() {
   deleteShoppingItems(state.shopping.filter((i) => i.checked).map((i) => i.id));
 }
 
-/** Ajoute les ingrédients « à acheter » d'une recette. Renvoie le nombre ajouté. */
+/** Ajoute aux courses les ingrédients absents du frigo actuel. Renvoie le nombre ajouté. */
 export function addMissingIngredients(recipe) {
-  return recipe.ingredients
-    .filter((i) => i.source === 'a_acheter')
+  return recipeAvailability(recipe).missing
     .reduce((count, i) => count + (addShoppingItem(i.name, i.quantity) ? 1 : 0), 0);
 }
 
@@ -465,12 +512,87 @@ export function saveRecipes(recipes) {
 export function toggleFavorite(id) {
   const recipe = state.recipes.find((r) => r.id === id);
   if (!recipe || !canWrite()) return;
-  write(setDoc(ref('recettes', id), { favorite: !recipe.favorite }, { merge: true }));
+  write(updateDoc(ref('recettes', id), { favorite: !recipe.favorite }));
 }
 
 export function deleteRecipe(id) {
   if (!canWrite()) return;
   write(deleteDoc(ref('recettes', id)));
+}
+
+// ---------------------------------------------------------------------------
+// Recettes et frigo actuel
+// ---------------------------------------------------------------------------
+
+/**
+ * Mémorise dans les recettes le code-barres, le nom et la catégorie des produits
+ * utilisés, pour les reconnaître s'ils sont rachetés après avoir été consommés.
+ * N'écrit que ce qui manque (sans effet la deuxième fois).
+ */
+function rememberRecipeLinks(products) {
+  if (!canWrite() || !products.length || !state.recipes.length) return;
+  const byId = new Map(products.map((p) => [p.id, p]));
+  const updates = [];
+  for (const recipe of state.recipes) {
+    let changed = false;
+    const ingredients = recipe.ingredients.map((ingredient) => {
+      const product = ingredient.productId ? byId.get(ingredient.productId) : null;
+      if (!product) return ingredient;
+      const patch = {};
+      if (product.barcode && !ingredient.barcode) patch.barcode = product.barcode;
+      if (!ingredient.productName) patch.productName = product.name;
+      if (!ingredient.category) patch.category = product.category;
+      if (!Object.keys(patch).length) return ingredient;
+      changed = true;
+      return { ...ingredient, ...patch };
+    });
+    if (changed) {
+      recipe.ingredients = ingredients;
+      updates.push([recipe.id, ingredients]);
+    }
+  }
+  if (!updates.length) return;
+  const batch = writeBatch(db);
+  updates.forEach(([id, ingredients]) => batch.update(ref('recettes', id), { ingredients }));
+  write(batch.commit());
+}
+
+/**
+ * Situation d'une recette par rapport au frigo actuel :
+ * rows : chaque ingrédient avec le produit retrouvé (ou null) et la façon dont il l'a été ;
+ * inFridge : produits du frigo utilisés (sans doublon) ; missing : ingrédients à se procurer.
+ */
+export function recipeAvailability(recipe, priorityIds = new Set()) {
+  const rows = recipe.ingredients.map((ingredient) => {
+    const match = resolveIngredient(ingredient, state.products);
+    const inShopping = !match && ingredient.source !== 'placard' && state.shopping.some(
+      (item) => item.name.localeCompare(ingredient.name, 'fr', { sensitivity: 'base' }) === 0
+    );
+    return { ingredient, product: match?.product ?? null, via: match?.via ?? null, inShopping };
+  });
+  const inFridge = [...new Map(rows.filter((r) => r.product).map((r) => [r.product.id, r.product])).values()];
+  const missing = rows.filter((r) => !r.product && r.ingredient.source !== 'placard').map((r) => r.ingredient);
+  const priorityUsed = inFridge.filter((p) => priorityIds.has(p.id)).length;
+  const urgentUsed = inFridge.filter((p) => productStatus(p) !== 'ok').length;
+  return { rows, inFridge, missing, priorityUsed, urgentUsed };
+}
+
+/**
+ * Recettes enregistrées réalisables avec le frigo actuel : au moins un produit
+ * du frigo et au plus deux ingrédients à se procurer. Les mieux adaptées d'abord.
+ */
+export function compatibleRecipes({ priorityIds = new Set(), filters = {}, limit = 5 } = {}) {
+  return state.recipes
+    .filter((recipe) => matchesFilters(recipe, filters))
+    .map((recipe) => ({ recipe, ...recipeAvailability(recipe, priorityIds) }))
+    .filter((r) => r.inFridge.length > 0 && r.missing.length <= 2)
+    .sort((a, b) => (b.priorityUsed - a.priorityUsed)
+      || (b.urgentUsed - a.urgentUsed)
+      || (a.missing.length - b.missing.length)
+      || (b.inFridge.length - a.inFridge.length)
+      || (Number(Boolean(b.recipe.favorite)) - Number(Boolean(a.recipe.favorite)))
+      || ((b.recipe.createdAt ?? 0) - (a.recipe.createdAt ?? 0)))
+    .slice(0, limit);
 }
 
 // ---------------------------------------------------------------------------

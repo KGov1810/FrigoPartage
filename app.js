@@ -205,6 +205,11 @@ function consume(id) {
   }, 180);
 }
 
+/** Ouvre le scanner tout de suite (dans le geste de l'utilisateur), puis la fiche avec le code lu. */
+function scanThenEdit() {
+  openScanner((code) => openEditor({ barcode: code }));
+}
+
 function openAddMenu() {
   const hasKey = Boolean(state.settings.claudeKey);
   const sheet = openSheet({
@@ -218,7 +223,7 @@ function openAddMenu() {
     actions: {
       scan: () => {
         sheet.close();
-        openEditor({ mode: 'barcode' });
+        scanThenEdit();
       },
       photo: () => {
         const filePromise = pickImage({ camera: true }); // dans le geste, sinon iOS refuse
@@ -237,7 +242,7 @@ function openAddMenu() {
 // Fiche produit (ajout / modification)
 // ===========================================================================
 
-function openEditor({ product = null, draft = null, mode = 'manual', filePromise = null, shoppingItemId = null } = {}) {
+function openEditor({ product = null, draft = null, mode = 'manual', filePromise = null, shoppingItemId = null, barcode = '' } = {}) {
   const isNew = !product;
   const p = {
     id: crypto.randomUUID(), name: '', expiry: S.isoInDays(7), category: 'autre', quantity: '',
@@ -458,13 +463,13 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
   }
 
   // Lancement automatique selon le choix fait dans le menu « + ».
-  if (mode === 'barcode') setTimeout(() => sheet.isOpen && openScanner((code) => handleBarcode(code)), 320);
+  if (barcode) handleBarcode(barcode);
   if (filePromise) {
     filePromise.then((file) => {
       if (file && sheet.isOpen) handleProductPhoto(file);
     });
   }
-  if (mode === 'manual' && isNew && !p.name) {
+  if (mode === 'manual' && isNew && !p.name && !barcode) {
     setTimeout(() => sheet.panel.querySelector('[name="name"]')?.focus(), 350);
   }
   return sheet;
@@ -474,6 +479,11 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
 // Scanner de code-barres
 // ===========================================================================
 
+/**
+ * Plein écran caméra. L'app gère la caméra elle-même et surveille l'image :
+ * si la vidéo ne démarre pas ou reste noire, elle le dit et propose des solutions
+ * (toucher pour démarrer, réessayer, photographier le code, taper les chiffres).
+ */
 function openScanner(onCode) {
   const overlay = document.createElement('div');
   overlay.className = 'scanner';
@@ -482,7 +492,11 @@ function openScanner(onCode) {
     <div class="scan-frame" aria-hidden="true"></div>
     <div class="scan-top"><button data-action="close">Annuler</button></div>
     <div class="scan-bottom">
-      <p class="scan-hint">Placez le code-barres dans le cadre</p>
+      <p class="scan-hint" role="status">Ouverture de la caméra…</p>
+      <div class="scan-actions" hidden>
+        <button class="scan-start" data-action="start-video">Démarrer la caméra</button>
+        <button class="scan-retry" data-action="retry">Réessayer</button>
+      </div>
       <form class="scan-manual">
         <input inputmode="numeric" pattern="[0-9]*" placeholder="Ou tapez les chiffres" autocomplete="off" aria-label="Chiffres du code-barres">
         <button type="submit">OK</button>
@@ -490,46 +504,168 @@ function openScanner(onCode) {
       <button class="scan-photo" data-action="photo">Photographier le code-barres</button>
     </div>`);
   document.body.append(overlay);
+  document.body.classList.add('scanning');
 
+  const video = overlay.querySelector('video');
   const hint = overlay.querySelector('.scan-hint');
-  let stopCamera = null;
-  let finished = false;
+  const actions = overlay.querySelector('.scan-actions');
+  const startButton = overlay.querySelector('.scan-start');
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d', { willReadFrequently: true });
 
-  const stop = () => {
-    stopCamera?.();
-    stopCamera = null;
+  let camera = null;
+  let decode = null;
+  let loopTimer = null;
+  let watchdog = null;
+  let finished = false;
+  let session = 0;
+  let darkFrames = 0;
+
+  const say = (text) => { hint.textContent = text; };
+  const showActions = (start, retry) => {
+    actions.hidden = !start && !retry;
+    startButton.hidden = !start;
+    overlay.querySelector('.scan-retry').hidden = !retry;
   };
-  const finish = (code) => {
+
+  function stopCamera() {
+    session += 1;
+    clearTimeout(loopTimer);
+    clearTimeout(watchdog);
+    camera?.stop();
+    camera = null;
+  }
+
+  function finish(code) {
     if (finished) return;
     finished = true;
-    stop();
+    stopCamera();
+    document.removeEventListener('visibilitychange', onVisibility);
+    document.body.classList.remove('scanning');
     overlay.remove();
     if (code) onCode(code);
-  };
+  }
 
-  S.startBarcodeScan(overlay.querySelector('video'), (code) => finish(code))
-    .then((stopFn) => {
-      if (finished) stopFn();
-      else stopCamera = stopFn;
-    })
-    .catch((error) => {
-      hint.textContent = error?.name === 'NotAllowedError'
-        ? "Accès à la caméra refusé : autorisez-le (Réglages de l'iPhone > Safari > Caméra) ou tapez les chiffres."
-        : 'Caméra indisponible : tapez les chiffres sous le code-barres.';
-    });
+  function isShowingImage() {
+    return video.readyState >= 2 && video.videoWidth > 0 && !video.paused;
+  }
+
+  async function begin() {
+    stopCamera();
+    const current = session;
+    showActions(false, false);
+    say('Ouverture de la caméra…');
+    try {
+      const opened = await S.startCamera(video);
+      if (current !== session || finished) {
+        opened.stop();
+        return;
+      }
+      camera = opened;
+    } catch (error) {
+      if (current !== session || finished) return;
+      if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+        say("Accès à la caméra refusé. Autorisez-le dans Réglages de l'iPhone > Safari > Caméra, puis touchez « Réessayer ». Vous pouvez aussi taper les chiffres.");
+      } else {
+        say('Caméra indisponible. Touchez « Réessayer », photographiez le code-barres ou tapez les chiffres.');
+      }
+      showActions(false, true);
+      return;
+    }
+
+    if (!camera.playing) {
+      say('Touchez « Démarrer la caméra » pour afficher l\'image.');
+      showActions(true, false);
+    } else {
+      say('Placez le code-barres dans le cadre');
+    }
+
+    // Surveillance : pas d'image au bout de 4 s → on le dit clairement.
+    watchdog = setTimeout(() => {
+      if (current !== session || finished || isShowingImage()) return;
+      say("La caméra ne s'affiche pas. Touchez « Démarrer la caméra » ; si l'écran reste noir, « Réessayer », ou fermez complètement l'app et rouvrez-la.");
+      showActions(true, true);
+    }, 4000);
+
+    try {
+      decode = decode ?? await S.createBarcodeDecoder();
+    } catch {
+      if (current === session) {
+        say('Lecteur de code-barres non téléchargé (connexion ?). Tapez les chiffres sous le code-barres.');
+      }
+      return;
+    }
+    scanLoop(current);
+  }
+
+  /** Analyse la bande centrale de l'image environ 6 fois par seconde. */
+  async function scanLoop(current) {
+    if (current !== session || finished) return;
+    if (isShowingImage()) {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      const bandHeight = Math.round(h * 0.45);
+      const scale = Math.min(1, 1000 / w);
+      canvas.width = Math.round(w * scale);
+      canvas.height = Math.round(bandHeight * scale);
+      context.drawImage(video, 0, Math.round((h - bandHeight) / 2), w, bandHeight, 0, 0, canvas.width, canvas.height);
+
+      // Image entièrement noire pendant plus de 3 s : caméra bloquée par iOS.
+      const pixel = context.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data;
+      darkFrames = pixel[0] + pixel[1] + pixel[2] < 6 ? darkFrames + 1 : 0;
+      if (darkFrames === 20) {
+        say("L'image reste noire. Touchez « Réessayer » ; si rien ne change, fermez complètement l'app (balayez-la vers le haut) et rouvrez-la.");
+        showActions(false, true);
+      }
+
+      const code = await decode(canvas);
+      if (code && current === session && !finished) {
+        finish(code);
+        return;
+      }
+    }
+    loopTimer = setTimeout(() => scanLoop(current), 160);
+  }
+
+  // iOS coupe la caméra quand l'app passe en arrière-plan : on la relance au retour.
+  function onVisibility() {
+    if (finished) return;
+    if (document.visibilityState === 'hidden') stopCamera();
+    else begin();
+  }
+  document.addEventListener('visibilitychange', onVisibility);
 
   overlay.addEventListener('click', (event) => {
     const target = event.target.closest('[data-action]');
     if (!target) return;
-    if (target.dataset.action === 'close') finish(null);
-    if (target.dataset.action === 'photo') {
-      stop(); // libère la caméra avant d'ouvrir l'appareil photo
+    const action = target.dataset.action;
+    if (action === 'close') finish(null);
+    if (action === 'retry') begin();
+    if (action === 'start-video') {
+      // Lancée dans le geste de l'utilisateur, la vidéo est toujours acceptée par iOS.
+      video.play().then(() => {
+        showActions(false, false);
+        say('Placez le code-barres dans le cadre');
+      }).catch(() => {
+        say('La caméra ne démarre pas. Touchez « Réessayer » ou tapez les chiffres.');
+        showActions(false, true);
+      });
+    }
+    if (action === 'photo') {
+      stopCamera(); // libère la caméra pour l'appareil photo d'iOS
       pickImage({ camera: true }).then(async (file) => {
-        if (!file) return;
-        hint.textContent = 'Lecture du code-barres…';
+        if (!file) {
+          say('Photo annulée. Touchez « Réessayer » pour relancer la caméra, ou tapez les chiffres.');
+          showActions(false, true);
+          return;
+        }
+        say('Lecture du code-barres…');
         const code = await S.decodeBarcodeFromImage(file).catch(() => null);
         if (code) finish(code);
-        else hint.textContent = 'Code-barres illisible sur la photo : tapez les chiffres.';
+        else {
+          say('Code-barres illisible sur la photo. Tapez les chiffres, ou touchez « Réessayer ».');
+          showActions(false, true);
+        }
       });
     }
   });
@@ -538,8 +674,10 @@ function openScanner(onCode) {
     event.preventDefault();
     const digits = event.target.querySelector('input').value.replace(/\D/g, '');
     if (digits.length >= 8) finish(digits);
-    else hint.textContent = 'Un code-barres compte 8 ou 13 chiffres.';
+    else say('Un code-barres compte 8 ou 13 chiffres.');
   });
+
+  begin();
 }
 
 // ===========================================================================
@@ -564,6 +702,7 @@ const recipesView = {
     const recipes = [...state.recipes]
       .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
       .filter((r) => S.matchesFilters(r, ui.filters) && (!ui.favoritesOnly || r.favorite));
+    const compatible = store.compatibleRecipes({ priorityIds: ui.priority, filters: ui.filters });
 
     return html`
       <header class="top">
@@ -596,8 +735,13 @@ const recipesView = {
         </label>
       </section>
 
-      <button class="primary" data-action="generate" ${canGenerate ? '' : raw('disabled')}>
-        ${ui.generating ? html`<span class="spinner"></span>Claude cuisine… (environ 30 s)` : html`${I.sparkle}Proposer 5 recettes`}
+      ${compatible.length ? html`
+        <h2 class="section">Déjà dans vos recettes<small>${compatible.length}</small></h2>
+        <p class="hint">Réalisables avec votre frigo actuel, sans nouvelle génération (gratuit).</p>
+        <div class="list">${compatible.map((c) => recipeCard(c.recipe, c))}</div>` : ''}
+
+      <button class="${compatible.length ? 'secondary' : 'primary'} generate" data-action="generate" ${canGenerate ? '' : raw('disabled')}>
+        ${ui.generating ? html`<span class="spinner"></span>Claude cuisine… (environ 30 s)` : html`${I.sparkle}${compatible.length ? 'Proposer 5 nouvelles recettes' : 'Proposer 5 recettes'}`}
       </button>
       ${ui.recipeNote
         ? html`<p class="note ${ui.recipeNote.kind}">${ui.recipeNote.text}</p>`
@@ -611,7 +755,7 @@ const recipesView = {
           ? html`<p class="hint">Aucune recette pour l'instant. Les recettes générées sont partagées avec l'autre iPhone.</p>`
           : !recipes.length
             ? html`<p class="hint">Aucune recette ne correspond à ces filtres.</p>`
-            : recipes.map(recipeCard)}
+            : recipes.map((recipe) => recipeCard(recipe))}
       </div>`;
   },
   update() {
@@ -619,8 +763,15 @@ const recipesView = {
   }
 };
 
-function recipeCard(recipe) {
-  const inStock = recipe.usedProductIds.filter((id) => store.productById(id)).length;
+function recipeCard(recipe, availability = store.recipeAvailability(recipe, ui.priority)) {
+  const { inFridge, missing, urgentUsed } = availability;
+  let fit = '';
+  if (inFridge.length) {
+    const missingText = missing.length === 0
+      ? 'tout est au frigo'
+      : `manque ${missing.slice(0, 2).map((i) => i.name.toLowerCase()).join(', ')}${missing.length > 2 ? '…' : ''}`;
+    fit = html`<span class="uses">Utilise ${S.plural(inFridge.length, 'produit')} du frigo${urgentUsed ? html`, <b class="urgent">dont ${urgentUsed} à consommer vite</b>` : ''}, ${missingText}</span>`;
+  }
   return html`
     <button class="recipe-card" data-action="open-recipe" data-id="${recipe.id}">
       <h3><span>${recipe.title}</span>${recipe.favorite ? I.star : ''}</h3>
@@ -630,7 +781,7 @@ function recipeCard(recipe) {
         <span>${I.gauge}${DIFFICULTY_LABEL[recipe.difficulty] ?? recipe.difficulty}</span>
         ${S.isBatchFriendly(recipe) ? html`<span>${I.box}Se garde ${S.plural(recipe.storageDays, 'jour')}</span>` : ''}
       </span>
-      ${inStock ? html`<span class="uses">Utilise ${S.plural(inStock, 'produit')} du frigo</span>` : ''}
+      ${fit}
     </button>`;
 }
 
@@ -732,7 +883,7 @@ function openRecipe(id) {
       cooked: () => {
         const recipe = findRecipe();
         if (!recipe) return;
-        const used = recipe.usedProductIds.map(store.productById).filter(Boolean);
+        const used = store.recipeAvailability(recipe).inFridge;
         if (!used.length) return;
         if (!window.confirm(`Retirer du frigo : ${used.map((p) => p.name).join(', ')} ?`)) return;
         const removed = store.removeProducts(used.map((p) => p.id));
@@ -761,8 +912,9 @@ function openRecipe(id) {
         <header class="sheet-head"><span></span><h2>Recette</h2><button class="link strong" data-action="close">Fermer</button></header>
         <div class="sheet-body"><p class="hint">Cette recette a été supprimée.</p></div>`;
     }
-    const used = recipe.usedProductIds.map(store.productById).filter(Boolean);
-    const missing = recipe.ingredients.filter((i) => i.source === 'a_acheter');
+    const availability = store.recipeAvailability(recipe);
+    const used = availability.inFridge;
+    const missing = availability.missing;
     const prep = recipe.prepMinutes && recipe.prepMinutes < recipe.totalMinutes
       ? `, dont ${S.formatMinutes(recipe.prepMinutes)} de préparation` : '';
     return html`
@@ -784,8 +936,8 @@ function openRecipe(id) {
 
         <section class="group">
           <h2>Ingrédients</h2>
-          ${recipe.ingredients.map(ingredientRow)}
-          ${missing.length ? html`<button class="row-button" data-action="add-missing">${I.cart}${missing.length > 1 ? `Ajouter les ${missing.length} ingrédients manquants aux courses` : "Ajouter l'ingrédient manquant aux courses"}</button>` : ''}
+          ${availability.rows.map(ingredientRow)}
+          ${missing.length ? html`<button class="row-button" data-action="add-missing">${I.cart}${missing.length > 1 ? `Ajouter les ${missing.length} ingrédients qui manquent aux courses` : "Ajouter l'ingrédient qui manque aux courses"}</button>` : ''}
         </section>
 
         <section class="group">
@@ -809,17 +961,27 @@ function openRecipe(id) {
   }
 }
 
-function ingredientRow(ingredient) {
+const VIA_LABEL = {
+  origine: 'Au frigo',
+  'code-barres': 'Au frigo (même code-barres)',
+  nom: 'Au frigo (produit similaire)'
+};
+
+function ingredientRow({ ingredient, product, via, inShopping }) {
   const source = SOURCE[ingredient.source] ? ingredient.source : 'a_acheter';
-  const product = ingredient.productId ? store.productById(ingredient.productId) : null;
-  const detail = [
-    ingredient.quantity,
-    ingredient.productId && !product ? 'plus au frigo' : SOURCE[source].label
-  ].filter(Boolean).join(', ');
+  let where;
+  if (product) where = VIA_LABEL[via];
+  else if (source === 'placard') where = SOURCE.placard.label;
+  else if (inShopping) where = 'Sur la liste de courses';
+  else if (ingredient.productId) where = 'Plus au frigo';
+  else where = 'À acheter';
+  const detail = [ingredient.quantity, where].filter(Boolean).join(', ');
+  const iconSource = product ? 'stock' : (source === 'placard' ? 'placard' : (inShopping ? 'courses' : 'a_acheter'));
+  const productNote = product && via !== 'origine' ? html`<small class="matched">${product.name}</small>` : '';
   return html`
     <div class="ingredient">
-      <span class="src ${source}">${SOURCE[source].icon}</span>
-      <div><span>${ingredient.name}</span><small>${detail}</small></div>
+      <span class="src ${iconSource}">${SOURCE[iconSource].icon}</span>
+      <div><span>${ingredient.name}</span><small>${detail}</small>${productNote}</div>
       ${product ? dayCounter(product.expiry, store.productStatus(product)) : ''}
     </div>`;
 }
@@ -1216,7 +1378,7 @@ function onStoreChange(what) {
 const ACTIONS = {
   // Frigo
   'add-menu': () => openAddMenu(),
-  'add-scan': () => openEditor({ mode: 'barcode' }),
+  'add-scan': () => scanThenEdit(),
   'add-manual': () => openEditor({ mode: 'manual' }),
   consume: (el) => consume(el.dataset.id),
   edit: (el) => {
@@ -1366,7 +1528,10 @@ function wireEvents() {
       updateChrome();
     }
   });
-  window.addEventListener('online', () => onStoreChange('sync'));
+  window.addEventListener('online', () => {
+    store.resume(); // rétablit tout de suite la connexion Firestore
+    onStoreChange('sync');
+  });
   window.addEventListener('offline', () => onStoreChange('sync'));
 }
 

@@ -539,3 +539,21 @@ body.onboarding #toast { bottom: calc(var(--safe-bottom) + 20px); }
 .row-actions.inline { padding: 12px 0; }
 .field a { color: var(--herb); font-weight: 600; text-decoration: none; }
 .top > div { min-width: 0; }
+
+/* ---------- Évolutions : scanner, recettes compatibles ---------- */
+
+/* Pendant le scan, rien d'autre n'est dessiné sous la caméra (évite des écrans noirs sur iOS). */
+body.scanning .tabbar,
+body.scanning .fab,
+body.scanning .sheet-backdrop { visibility: hidden; }
+.scan-actions { display: flex; gap: 8px; }
+.scan-actions button {
+  flex: 1; min-height: 48px; border-radius: 12px; padding: 0 12px; font-weight: 650;
+  background: #fff; color: #111;
+}
+.scan-actions .scan-retry { background: rgba(255, 255, 255, .18); color: #fff; }
+.scan-hint { line-height: 1.35; }
+
+.uses .urgent { color: var(--apricot); font-weight: 700; }
+.ingredient small.matched { font-size: 13px; color: var(--herb); }
+.generate { margin-top: 18px; }
