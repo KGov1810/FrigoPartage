@@ -15,7 +15,7 @@ const ui = {
   search: '',
   priority: new Set(),
   customPriority: false,
-  filters: { difficulty: '', maxMinutes: 0, batchOnly: false, diet: '', light: false },
+  filters: { difficulty: '', maxMinutes: 0, batchOnly: false, diet: '', light: false, origins: [], wish: '' },
   favoritesOnly: false,
   generating: false,
   recipeNote: null,
@@ -27,6 +27,21 @@ const DIFFICULTY_LABEL = { facile: 'Facile', moyen: 'Moyen', difficile: 'Diffici
 /** Filtres de recettes + seuil « léger » choisi dans les Réglages. */
 function currentFilters() {
   return { ...ui.filters, lightMax: state.settings.lightMaxKcal || 500 };
+}
+
+/** « Toutes », « 🇮🇹 Italienne, 🇯🇵 Japonaise », « « nouilles » »… */
+function originSummary() {
+  const labels = ui.filters.origins.map((id) => S.ORIGINS.find((o) => o.id === id)).filter(Boolean)
+    .map((o) => `${o.emoji} ${o.label}`);
+  const shown = labels.length > 3 ? [...labels.slice(0, 2), `+${labels.length - 2}`] : labels;
+  const parts = [...shown];
+  if (ui.filters.wish) parts.push(`« ${ui.filters.wish} »`);
+  return parts.length ? parts.join(', ') : 'Toutes les cuisines';
+}
+
+function originFact(recipe) {
+  const origin = S.originOf(recipe.origin);
+  return origin ? html`<span>${origin.emoji} ${origin.label}</span>` : '';
 }
 
 function servingsLabel(n) {
@@ -866,7 +881,7 @@ function openReceipt(firstFilePromise) {
       <section class="group">
         ${view.items.map((item, index) => html`
           <div class="receipt-line ${item.selected ? '' : 'off'}">
-            <button class="pick-box" role="checkbox" aria-checked="${item.selected}" data-action="toggle-line" data-index="${index}" aria-label="Garder ${item.name}"><span class="box">${I.check}</span></button>
+            <button class="pick-box" role="checkbox" aria-checked="${String(item.selected)}" data-action="toggle-line" data-index="${index}" aria-label="Garder ${item.name}"><span class="box">${I.check}</span></button>
             <span class="thumb">${S.category(item.category).emoji}</span>
             <div class="receipt-fields">
               <input data-field="name" data-index="${index}" value="${item.name}" aria-label="Nom du produit" autocomplete="off">
@@ -968,13 +983,12 @@ const recipesView = {
       .filter((r) => S.matchesFilters(r, currentFilters()) && (!ui.favoritesOnly || r.favorite));
     const compatible = store.compatibleRecipes({ priorityIds: ui.priority, filters: currentFilters() });
     const servings = state.settings.servings || 2;
-    const nutritionFilter = ui.filters.diet || ui.filters.light;
-    const hiddenOld = nutritionFilter ? state.recipes.filter(S.lacksNutrition).length : 0;
+    const hiddenOld = state.recipes.filter((r) => S.lacksTagsFor(r, currentFilters())).length;
 
     return html`
       <header class="top">
         <h1>Recettes</h1>
-        <button class="icon-btn" data-action="toggle-favorites" aria-pressed="${ui.favoritesOnly}" aria-label="Afficher seulement les favoris">${I.star}</button>
+        <button class="icon-btn" data-action="toggle-favorites" aria-pressed="${String(ui.favoritesOnly)}" aria-label="Afficher seulement les favoris">${I.star}</button>
       </header>
 
       <section class="group">
@@ -997,15 +1011,19 @@ const recipesView = {
         </div>
         <span class="filter-label">Régime</span>
         <div class="segmented" role="group" aria-label="Régime">
-          ${S.DIETS.map((d) => html`<button data-action="set-diet" data-value="${d.id}" aria-pressed="${ui.filters.diet === d.id}">${d.label}</button>`)}
+          ${S.DIETS.map((d) => html`<button data-action="set-diet" data-value="${d.id}" aria-pressed="${String(ui.filters.diet === d.id)}">${d.label}</button>`)}
         </div>
+        <button class="field field-button" data-action="pick-origin">
+          <span class="label-stack">Origine<small>${originSummary()}</small></span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </button>
         <span class="filter-label">Difficulté</span>
         <div class="segmented" role="group" aria-label="Difficulté">
-          ${[['', 'Toutes'], ...S.DIFFICULTIES.map((d) => [d.id, d.label])].map(([value, label]) => html`<button data-action="set-difficulty" data-value="${value}" aria-pressed="${ui.filters.difficulty === value}">${label}</button>`)}
+          ${[['', 'Toutes'], ...S.DIFFICULTIES.map((d) => [d.id, d.label])].map(([value, label]) => html`<button data-action="set-difficulty" data-value="${value}" aria-pressed="${String(ui.filters.difficulty === value)}">${label}</button>`)}
         </div>
         <span class="filter-label">Temps total maximum</span>
         <div class="segmented" role="group" aria-label="Temps total maximum">
-          ${S.TIME_FILTERS.map((t) => html`<button data-action="set-time" data-value="${t.max}" aria-pressed="${ui.filters.maxMinutes === t.max}">${t.label}</button>`)}
+          ${S.TIME_FILTERS.map((t) => html`<button data-action="set-time" data-value="${t.max}" aria-pressed="${String(ui.filters.maxMinutes === t.max)}">${t.label}</button>`)}
         </div>
         <label class="field">
           <span class="label-stack">Batch cooking<small>Se prépare en avance et se garde plusieurs jours</small></span>
@@ -1039,7 +1057,7 @@ const recipesView = {
             ? html`<p class="hint">Aucune recette ne correspond à ces filtres.</p>`
             : recipes.map((recipe) => recipeCard(recipe))}
       </div>
-      ${hiddenOld ? html`<p class="hint">${S.plural(hiddenOld, 'recette ancienne', 'recettes anciennes')} (sans régime ni calories) ${hiddenOld > 1 ? 'sont masquées' : 'est masquée'} avec ces filtres.</p>` : ''}`;
+      ${hiddenOld ? html`<p class="hint">${S.plural(hiddenOld, 'recette ancienne', 'recettes anciennes')} (sans régime, calories ou origine) ${hiddenOld > 1 ? 'sont masquées' : 'est masquée'} avec ces filtres.</p>` : ''}`;
   },
   update() {
     rerenderKeepScroll();
@@ -1065,6 +1083,7 @@ function recipeCard(recipe, availability = store.recipeAvailability(recipe, ui.p
         ${S.isBatchFriendly(recipe) ? html`<span>${I.box}Se garde ${S.plural(recipe.storageDays, 'jour')}</span>` : ''}
         ${recipe.kcal > 0 ? html`<span>${I.flame}≈ ${recipe.kcal} kcal</span>` : ''}
         ${S.DIET_LABEL[recipe.diet] ? html`<span class="diet">${I.leaf}${S.DIET_LABEL[recipe.diet]}</span>` : ''}
+        ${originFact(recipe)}
       </span>
       ${fit}
     </button>`;
@@ -1117,7 +1136,7 @@ function openProductPicker() {
       <div class="sheet-body">
         <section class="group">
           ${store.sortedProducts().map((p) => html`
-            <button class="pick" role="checkbox" aria-checked="${ui.priority.has(p.id)}" data-action="toggle" data-id="${p.id}">
+            <button class="pick" role="checkbox" aria-checked="${String(ui.priority.has(p.id))}" data-action="toggle" data-id="${p.id}">
               <span class="box">${I.check}</span>
               ${thumb(p)}
               <span class="product-text"><span class="product-name">${p.name}</span><span class="product-meta">${S.expiryLabel(p.expiry)}</span></span>
@@ -1143,12 +1162,68 @@ function openProductPicker() {
   });
 }
 
+/** Cuisines à cocher (plusieurs possibles) + envie libre. « Tour du monde » exclut les autres. */
+function openOriginPicker() {
+  const draft = { origins: new Set(ui.filters.origins), wish: ui.filters.wish };
+  const sheet = openSheet({
+    tall: true,
+    render: () => html`
+      <header class="sheet-head">
+        <button class="link" data-action="clear">Effacer</button>
+        <h2>Origine</h2>
+        <button class="link strong" data-action="done">OK</button>
+      </header>
+      <div class="sheet-body">
+        <section class="group">
+          <label class="field stack"><span>Envie de…</span>
+            <input name="wish" value="${draft.wish}" placeholder="nouilles, couscous, ramen, curry…" autocomplete="off" enterkeyhint="done">
+          </label>
+        </section>
+        <h2 class="section">Cuisines<small>${draft.origins.size ? `${draft.origins.size} choisie${draft.origins.size > 1 ? 's' : ''}` : 'toutes'}</small></h2>
+        <div class="origin-grid" role="group" aria-label="Cuisines">
+          ${S.ORIGINS.map((o) => html`<button class="origin-chip" data-action="toggle-origin" data-id="${o.id}" aria-pressed="${String(draft.origins.has(o.id))}"><span aria-hidden="true">${o.emoji}</span>${o.label}</button>`)}
+        </div>
+        <p class="hint">Plusieurs choix possibles. Avec une cuisine ou une envie, Claude peut prévoir jusqu'à 6 ingrédients à acheter par recette pour rester fidèle à l'originale.</p>
+      </div>`,
+    actions: {
+      'toggle-origin': (el) => {
+        const id = el.dataset.id;
+        if (draft.origins.has(id)) {
+          draft.origins.delete(id);
+        } else {
+          if (id === 'monde') draft.origins.clear();
+          else draft.origins.delete('monde');
+          draft.origins.add(id);
+        }
+        sheet.update();
+      },
+      clear: () => {
+        draft.origins.clear();
+        draft.wish = '';
+        sheet.update();
+      },
+      done: () => {
+        ui.filters.origins = [...draft.origins];
+        ui.filters.wish = draft.wish.trim().slice(0, 80);
+        ui.recipeNote = null;
+        sheet.close();
+        rerenderIf('recettes');
+      }
+    },
+    onInput: (event) => {
+      if (event.target.name === 'wish') draft.wish = event.target.value;
+    }
+  });
+}
+
 function recipeShareText(recipe, servings = recipe.servings) {
   const factor = servings / (recipe.servings || servings);
   const lines = [recipe.title];
   if (recipe.summary) lines.push(recipe.summary);
   const infos = [S.formatMinutes(recipe.totalMinutes), (DIFFICULTY_LABEL[recipe.difficulty] ?? '').toLowerCase(), `pour ${S.plural(servings, 'portion')}`];
   if (recipe.kcal > 0) infos.push(`environ ${recipe.kcal} kcal par portion`);
+  const origin = S.originOf(recipe.origin);
+  if (origin) infos.push(`cuisine ${origin.label.toLowerCase()}`);
   lines.push('', infos.join(', '));
   lines.push('', 'Ingrédients :', ...recipe.ingredients.map((i) => {
     const quantity = S.scaleIngredient(i, factor);
@@ -1229,7 +1304,7 @@ function openRecipe(id) {
       ? `, dont ${S.formatMinutes(recipe.prepMinutes)} de préparation` : '';
     return html`
       <header class="sheet-head">
-        <button class="icon-btn" data-action="favorite" aria-pressed="${Boolean(recipe.favorite)}" aria-label="${recipe.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}">${I.star}</button>
+        <button class="icon-btn" data-action="favorite" aria-pressed="${String(Boolean(recipe.favorite))}" aria-label="${recipe.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}">${I.star}</button>
         <h2>Recette</h2>
         <button class="link strong" data-action="close">Fermer</button>
       </header>
@@ -1241,6 +1316,7 @@ function openRecipe(id) {
             <span>${I.clock}${S.formatMinutes(recipe.totalMinutes)}${prep}</span>
             <span>${I.gauge}${DIFFICULTY_LABEL[recipe.difficulty] ?? recipe.difficulty}</span>
             ${S.DIET_LABEL[recipe.diet] ? html`<span class="diet">${I.leaf}${S.DIET_LABEL[recipe.diet]}</span>` : ''}
+            ${originFact(recipe)}
           </div>
           <p class="kcal">${recipe.kcal > 0
             ? html`${I.flame}≈ ${recipe.kcal} kcal par portion <small>(estimation)</small>`
@@ -1318,10 +1394,10 @@ const shoppingView = {
         <button class="link" data-action="clear-checked" id="clear-checked" hidden>Vider le panier</button></header>
       <form class="add-item" id="add-item">
         <input id="new-item" placeholder="Article à acheter" autocomplete="off" enterkeyhint="done" aria-label="Article à acheter">
-        <input id="new-qty" class="qty" placeholder="Qté" autocomplete="off" enterkeyhint="done" aria-label="Quantité à acheter (facultatif, ex. 2 kg)">
+        <input id="new-qty" class="qty" placeholder="Qté" inputmode="numeric" pattern="[0-9]*" maxlength="3" autocomplete="off" enterkeyhint="done" aria-label="Nombre à acheter (facultatif)">
         <button type="submit" aria-label="Ajouter">${I.plus}</button>
       </form>
-      <p class="hint add-hint">Quantité facultative : « 2 kg », « 3 », « 2 paquets »… Touchez un article pour la modifier.</p>
+      <p class="hint add-hint">Qté : un nombre, facultatif. Pour un poids, écrivez-le avec l'article (« Farine 1 kg »). Touchez un article pour le modifier.</p>
       <div id="shopping-list"></div>`;
   },
   mounted() {
@@ -1353,7 +1429,7 @@ const shoppingView = {
 function shoppingRow(item) {
   return html`
     <div class="shop-item ${item.checked ? 'checked' : ''}">
-      <button class="tick" data-action="toggle-item" data-id="${item.id}" aria-pressed="${item.checked}" aria-label="${item.checked ? 'Décocher' : 'Cocher'} ${item.name}"><span>${I.check}</span></button>
+      <button class="tick" data-action="toggle-item" data-id="${item.id}" aria-pressed="${String(item.checked)}" aria-label="${item.checked ? 'Décocher' : 'Cocher'} ${item.name}"><span>${I.check}</span></button>
       <button class="shop-text" data-action="edit-item" data-id="${item.id}" aria-label="Modifier ${item.name}${item.quantity ? `, ${item.quantity}` : ''}">
         <span>${item.name}</span>${item.addedBy ? html`<small>par ${item.addedBy}</small>` : ''}
       </button>
@@ -1366,15 +1442,18 @@ function shoppingRow(item) {
 
 /** Ranger un article acheté : la fiche produit s'ouvre avec le nom, le nombre et le poids. */
 function moveItemToFridge(item) {
-  const { count, quantity } = S.splitCount(item.quantity);
-  openEditor({ draft: { name: item.name, quantity, count }, shoppingItemId: item.id });
+  const { name, quantity, count } = S.fromShoppingEntry(item);
+  openEditor({ draft: { name, quantity, count }, shoppingItemId: item.id });
 }
 
 /** Fiche d'un article de courses : nom et quantité modifiables. */
 function openShoppingItem(id) {
   const item = state.shopping.find((i) => i.id === id);
   if (!item) return;
-  const draft = { name: item.name, quantity: item.quantity };
+  // Ancienne quantité libre (« 2 kg ») : convertie en nombre + poids dans le nom.
+  const draft = /^\d*$/.test(item.quantity ?? '')
+    ? { name: item.name, quantity: item.quantity ?? '' }
+    : S.toShoppingEntry(item.name, item.quantity);
   const sheet = openSheet({
     render: () => html`
       <header class="sheet-head">
@@ -1385,7 +1464,7 @@ function openShoppingItem(id) {
       <div class="sheet-body">
         <section class="group">
           <label class="field"><span>Article</span><input name="name" value="${draft.name}" autocomplete="off"></label>
-          <label class="field"><span>Quantité</span><input name="quantity" value="${draft.quantity}" placeholder="2 kg, 3, 2 paquets…" autocomplete="off" enterkeyhint="done"></label>
+          <label class="field"><span>Nombre à acheter</span><input name="quantity" value="${draft.quantity}" placeholder="—" inputmode="numeric" pattern="[0-9]*" maxlength="3" autocomplete="off" enterkeyhint="done"></label>
         </section>
         <div class="quick">
           ${['1', '2', '3', '4', '6'].map((n) => html`<button data-action="set-qty" data-value="${n}">${n}</button>`)}
@@ -1419,7 +1498,11 @@ function openShoppingItem(id) {
     },
     onInput: (event) => {
       if (event.target.name === 'name') draft.name = event.target.value;
-      if (event.target.name === 'quantity') draft.quantity = event.target.value;
+      if (event.target.name === 'quantity') {
+        const clean = S.sanitizeCount(event.target.value);
+        if (event.target.value !== clean) event.target.value = clean;
+        draft.quantity = clean;
+      }
     }
   });
 }
@@ -1467,10 +1550,10 @@ const settingsView = {
 
       <section class="group">
         <h2>Recettes</h2>
-        <div class="field"><span class="label-stack">Recette légère<small>Filtre « Léger » de l'écran Recettes</small></span>
+        <div class="field"><span class="label-stack">Recette légère<small>Maximum par portion (filtre « Léger »)</small></span>
           <div class="stepper">
             <button data-action="kcal-minus" aria-label="50 kcal de moins">−</button>
-            <output id="kcal-max">${s.lightMaxKcal || 500} kcal max</output>
+            <output id="kcal-max">${s.lightMaxKcal || 500} kcal</output>
             <button data-action="kcal-plus" aria-label="50 kcal de plus">+</button>
           </div>
         </div>
@@ -1498,7 +1581,7 @@ const settingsView = {
     const days = document.getElementById('alert-days');
     if (days) days.textContent = alertText(s.alertDays);
     const kcal = document.getElementById('kcal-max');
-    if (kcal) kcal.textContent = `${s.lightMaxKcal || 500} kcal max`;
+    if (kcal) kcal.textContent = `${s.lightMaxKcal || 500} kcal`;
     setHTML('#badge-row', badgeRow());
     const time = state.lastSync ? state.lastSync.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '—';
     setHTML('#sync-details', html`
@@ -1792,6 +1875,7 @@ const ACTIONS = {
     rerenderKeepScroll();
   },
   'pick-products': () => openProductPicker(),
+  'pick-origin': () => openOriginPicker(),
   'set-difficulty': (el) => {
     ui.filters.difficulty = el.dataset.value;
     ui.recipeNote = null;
@@ -1896,6 +1980,11 @@ function wireEvents() {
 
   screen.addEventListener('input', (event) => {
     const t = event.target;
+    if (t.id === 'new-qty') {
+      const clean = S.sanitizeCount(t.value);
+      if (t.value !== clean) t.value = clean;
+      return;
+    }
     if (t.id === 'search') {
       ui.search = t.value;
       setHTML('#fridge-list', fridgeList());
@@ -1926,7 +2015,7 @@ function wireEvents() {
     const nameInput = document.getElementById('new-item');
     const qtyInput = document.getElementById('new-qty');
     const name = nameInput.value.trim();
-    const qty = qtyInput.value.trim();
+    const qty = S.sanitizeCount(qtyInput.value);
     if (!name) {
       if (qty) toast("Indiquez l'article à acheter");
       nameInput.focus();

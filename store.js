@@ -9,7 +9,10 @@ import {
   collection, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, writeBatch, serverTimestamp,
   disableNetwork, enableNetwork
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
-import { statusOf, daysUntil, hasDate, resolveIngredient, matchesFilters, scaleIngredient } from './services.js';
+import {
+  statusOf, daysUntil, hasDate, resolveIngredient, matchesFilters, scaleIngredient, maxPurchases,
+  sanitizeCount, splitItemName, toShoppingEntry
+} from './services.js';
 
 // ---------------------------------------------------------------------------
 // Réglages locaux
@@ -30,8 +33,8 @@ const DEFAULT_SETTINGS = {
 };
 
 export const MODELS = [
-  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 (recommandé)' },
-  { id: 'claude-haiku-4-5', label: 'Haiku 4.5 (rapide, économique)' }
+  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 (conseillé)' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5 (économique)' }
 ];
 
 function loadSettings() {
@@ -488,11 +491,17 @@ export function consumeOne(ids) {
  * quantité a été remplacée, si updateQuantity) ou false (déjà présent).
  */
 export function addShoppingItem(name, quantity = '', { updateQuantity = false } = {}) {
-  const trimmed = (name ?? '').trim();
-  const amount = String(quantity ?? '').trim();
+  const raw = String(quantity ?? '').trim();
+  // La quantité enregistrée est toujours un nombre ; un poids (« 400 g ») rejoint le nom.
+  const entry = /^\d*$/.test(raw)
+    ? { name: (name ?? '').trim(), quantity: sanitizeCount(raw) }
+    : toShoppingEntry(name, raw);
+  const trimmed = entry.name;
+  const amount = entry.quantity;
   if (!trimmed || !canWrite()) return false;
+  const base = splitItemName(trimmed).base;
   const existing = state.shopping.find((i) => !i.checked
-    && i.name.localeCompare(trimmed, 'fr', { sensitivity: 'base' }) === 0);
+    && splitItemName(i.name).base.localeCompare(base, 'fr', { sensitivity: 'base' }) === 0);
   if (existing) {
     if (updateQuantity && amount && amount !== existing.quantity) {
       updateShoppingItem(existing.id, { quantity: amount });
@@ -512,7 +521,7 @@ export function updateShoppingItem(id, patch) {
   if (!canWrite()) return;
   const data = {};
   if (patch.name !== undefined && patch.name.trim()) data.name = patch.name.trim();
-  if (patch.quantity !== undefined) data.quantity = String(patch.quantity).trim();
+  if (patch.quantity !== undefined) data.quantity = sanitizeCount(patch.quantity);
   if (Object.keys(data).length) write(updateDoc(ref('courses', id), data));
 }
 
@@ -638,7 +647,7 @@ export function recipeAvailability(recipe, priorityIds = new Set()) {
   const rows = recipe.ingredients.map((ingredient) => {
     const match = resolveIngredient(ingredient, state.products);
     const inShopping = !match && ingredient.source !== 'placard' && state.shopping.some(
-      (item) => item.name.localeCompare(ingredient.name, 'fr', { sensitivity: 'base' }) === 0
+      (item) => splitItemName(item.name).base.localeCompare(ingredient.name, 'fr', { sensitivity: 'base' }) === 0
     );
     return { ingredient, product: match?.product ?? null, via: match?.via ?? null, inShopping };
   });
@@ -651,13 +660,15 @@ export function recipeAvailability(recipe, priorityIds = new Set()) {
 
 /**
  * Recettes enregistrées réalisables avec le frigo actuel : au moins un produit
- * du frigo et au plus deux ingrédients à se procurer. Les mieux adaptées d'abord.
+ * du frigo et au plus deux ingrédients à se procurer (six avec une origine ou une envie).
+ * Les mieux adaptées d'abord.
  */
 export function compatibleRecipes({ priorityIds = new Set(), filters = {}, limit = 5 } = {}) {
   return state.recipes
     .filter((recipe) => matchesFilters(recipe, filters))
     .map((recipe) => ({ recipe, ...recipeAvailability(recipe, priorityIds) }))
-    .filter((r) => r.inFridge.length > 0 && r.missing.length <= 2)
+    // Avec une origine ou une envie, une recette fidèle peut demander jusqu'à 6 achats.
+    .filter((r) => r.inFridge.length > 0 && r.missing.length <= maxPurchases(filters))
     .sort((a, b) => (b.priorityUsed - a.priorityUsed)
       || (b.urgentUsed - a.urgentUsed)
       || (a.missing.length - b.missing.length)

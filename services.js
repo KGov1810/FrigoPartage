@@ -173,6 +173,50 @@ export function scaleIngredient(ingredient, factor = 1) {
   return parsed ? formatAmount(parsed.value * factor, parsed.unit) : original; // « une pincée » : inchangé
 }
 
+// ---------------------------------------------------------------------------
+// Quantité des courses : un nombre entier ; le poids éventuel va dans le nom
+// ---------------------------------------------------------------------------
+
+/** Ne garde que les chiffres (1 à 999) ; vide si rien de valable. */
+export function sanitizeCount(value) {
+  return String(value ?? '').replace(/\D/g, '').replace(/^0+/, '').slice(0, 3);
+}
+
+/** « Farine (1 kg) » ou « Farine 1 kg » → { base: 'Farine', size: '1 kg' }. */
+export function splitItemName(name) {
+  const text = String(name ?? '').trim();
+  let m = /^(.*\S)\s*\(([^()]*\d[^()]*)\)$/.exec(text);
+  if (m) return { base: m[1].trim(), size: m[2].trim() };
+  m = /^(.*\S)\s+(\d+(?:[.,]\d+)?\s?(?:mg|g|kg|ml|cl|dl|l))$/i.exec(text);
+  if (m) return { base: m[1].trim(), size: m[2].trim() };
+  return { base: text, size: '' };
+}
+
+/**
+ * Article de courses à partir d'une quantité libre (recette, produit du frigo) :
+ * le nombre devient la quantité, le poids rejoint le nom.
+ * « 2 × 1 kg » → { Farine (1 kg), '2' } ; « 400 g » → { Pâtes (400 g), '' } ; « 3 » → { Œufs, '3' }.
+ */
+export function toShoppingEntry(name, quantityText) {
+  let { count, quantity: size } = splitCount(quantityText);
+  const amount = parseAmount(size);
+  if (size && amount && !amount.unit) {
+    count = Math.max(1, Math.ceil(amount.value)); // « 1 ½ » → 2
+    size = '';
+  }
+  const base = String(name ?? '').trim();
+  return { name: size ? `${base} (${size})` : base, quantity: count > 1 ? String(count) : '' };
+}
+
+/** Article de courses → produit du frigo : { name, quantity (poids), count }. */
+export function fromShoppingEntry(item) {
+  const { base, size } = splitItemName(item.name);
+  const q = String(item.quantity ?? '').trim();
+  if (!q || /^\d+$/.test(q)) return { name: base, quantity: size, count: Math.max(1, Number(q) || 1) };
+  const legacy = splitCount(q); // anciennes quantités libres (« 2 kg », « 2 paquets de 1 kg »)
+  return { name: base, quantity: legacy.quantity || size, count: legacy.count };
+}
+
 export function plural(count, singular, pluralForm) {
   return `${count} ${count > 1 ? (pluralForm ?? `${singular}s`) : singular}`;
 }
@@ -529,11 +573,36 @@ async function callTool({ key, model, system, content, tool, maxTokens, timeoutM
   return block.input;
 }
 
+/** Cuisines proposées. « monde » = Tour du monde (origines variées, hors cuisine française). */
+export const ORIGINS = [
+  { id: 'monde', label: 'Tour du monde', emoji: '✈️' },
+  { id: 'francaise', label: 'Française', emoji: '🇫🇷' },
+  { id: 'italienne', label: 'Italienne', emoji: '🇮🇹' },
+  { id: 'espagnole', label: 'Espagnole', emoji: '🇪🇸' },
+  { id: 'grecque', label: 'Grecque', emoji: '🇬🇷' },
+  { id: 'maghrebine', label: 'Maghrébine', emoji: '🥘' },
+  { id: 'libanaise', label: 'Libanaise', emoji: '🇱🇧' },
+  { id: 'indienne', label: 'Indienne', emoji: '🇮🇳' },
+  { id: 'chinoise', label: 'Chinoise', emoji: '🇨🇳' },
+  { id: 'japonaise', label: 'Japonaise', emoji: '🇯🇵' },
+  { id: 'thaie', label: 'Thaïe', emoji: '🇹🇭' },
+  { id: 'vietnamienne', label: 'Vietnamienne', emoji: '🇻🇳' },
+  { id: 'coreenne', label: 'Coréenne', emoji: '🇰🇷' },
+  { id: 'mexicaine', label: 'Mexicaine', emoji: '🇲🇽' },
+  { id: 'americaine', label: 'Américaine', emoji: '🇺🇸' },
+  { id: 'africaine', label: 'Africaine', emoji: '🌍' }
+];
+
+/** Origine d'une recette (hors « Tour du monde ») ou null. */
+export function originOf(id) {
+  return ORIGINS.find((o) => o.id === id && o.id !== 'monde') ?? null;
+}
+
 const RECIPE_SYSTEM = `Tu es un chef cuisinier français spécialisé dans la cuisine anti-gaspillage du quotidien, pour un foyer de deux personnes.
 Règles :
 - Utilise en priorité les produits proches de leur date, puis les autres produits du frigo et ceux de la liste de courses.
 - Les basiques du placard sont supposés disponibles (sel, poivre, huiles, vinaigre, farine, sucre, épices courantes, herbes séchées, ail, oignon, moutarde, bouillon cube) : source « placard ».
-- Tout autre ingrédient nécessaire est en source « a_acheter » ; limite-les au strict minimum (2 au maximum par recette).
+- Tout autre ingrédient nécessaire est en source « a_acheter » ; limite-les au strict minimum (2 au maximum par recette, sauf si les contraintes en autorisent davantage).
 - Pour chaque ingrédient venant du frigo, renseigne ref_stock avec la référence exacte (ex. « P3 ») ; pour la liste de courses, source « courses ».
 - Sécurité alimentaire : un produit dont la date est dépassée ne peut être utilisé que s'il s'agit d'une DDM (épicerie sèche, conserves, biscuits, pâtes…) après vérification de son aspect, et tu le signales dans le résumé. N'utilise jamais une viande, un poisson, un produit laitier frais ou un plat traiteur dont la date est dépassée.
 - Temps réalistes (préparation + cuisson). Respecte le nombre de personnes demandé ; en batch cooking, prévois 2 à 3 repas pour ce nombre de personnes et indique le total dans portions.
@@ -561,6 +630,7 @@ const RECIPE_TOOL = {
             temps_preparation_minutes: { type: 'integer' },
             portions: { type: 'integer', description: 'Nombre total de portions.' },
             regime: { type: 'string', enum: ['vegan', 'vegetarien', 'omnivore'] },
+            origine: { type: 'string', enum: [...ORIGINS.filter((o) => o.id !== 'monde').map((o) => o.id), 'autre'], description: "Cuisine d'origine de la recette." },
             calories_par_portion: { type: 'integer', description: 'Estimation en kcal pour une portion.' },
             batch_cooking: { type: 'boolean', description: 'true si la recette se prépare en quantité et se conserve plusieurs jours.' },
             conservation_jours: { type: 'integer', description: 'Jours de conservation au réfrigérateur après préparation.' },
@@ -583,7 +653,7 @@ const RECIPE_TOOL = {
             etapes: { type: 'array', items: { type: 'string' } }
           },
           required: ['titre', 'resume', 'difficulte', 'temps_total_minutes', 'temps_preparation_minutes',
-            'portions', 'regime', 'calories_par_portion', 'batch_cooking', 'conservation_jours', 'conseils_conservation',
+            'portions', 'regime', 'origine', 'calories_par_portion', 'batch_cooking', 'conservation_jours', 'conseils_conservation',
             'ingredients', 'etapes']
         }
       }
@@ -606,6 +676,15 @@ export const DIETS = [
 
 export const DIET_LABEL = { vegetarien: 'Végétarien', vegan: 'Vegan' };
 
+/** Nombre maximal d'ingrédients à acheter par recette. */
+export function maxPurchases(filters) {
+  return (filters.origins?.length || (filters.wish ?? '').trim()) ? 6 : 2;
+}
+
+function recipeText(recipe) {
+  return [recipe.title, recipe.summary, ...(recipe.ingredients ?? []).map((i) => i.name)].join(' ');
+}
+
 export const TIME_FILTERS = [
   { max: 0, label: 'Peu importe' },
   { max: 15, label: '15 min' },
@@ -625,12 +704,30 @@ export function matchesFilters(recipe, filters) {
   if (filters.diet === 'vegan' && recipe.diet !== 'vegan') return false;
   if (filters.diet === 'vegetarien' && !['vegetarien', 'vegan'].includes(recipe.diet)) return false;
   if (filters.light && !(recipe.kcal > 0 && recipe.kcal <= (filters.lightMax || 500))) return false;
+  const origins = filters.origins ?? [];
+  if (origins.length) {
+    if (!recipe.origin) return false;
+    const worldTour = origins.includes('monde');
+    if (worldTour ? recipe.origin === 'francaise' : !origins.includes(recipe.origin)) return false;
+  }
+  // Envie libre (« nouilles », « couscous ») : au moins un de ses mots dans la recette.
+  const wish = nameTokens(filters.wish ?? '');
+  if (wish.length) {
+    const words = new Set(nameTokens(recipeText(recipe)));
+    if (!wish.some((w) => words.has(w))) return false;
+  }
   return true;
 }
 
 /** Recettes enregistrées avant l'arrivée du régime et des calories. */
 export function lacksNutrition(recipe) {
   return !recipe.diet || !(recipe.kcal > 0);
+}
+
+/** Recette masquée faute d'une information apparue après sa création (régime, calories, origine). */
+export function lacksTagsFor(recipe, filters) {
+  if ((filters.diet || filters.light) && lacksNutrition(recipe)) return true;
+  return Boolean(filters.origins?.length) && !recipe.origin;
 }
 
 export function formatMinutes(minutes) {
@@ -647,6 +744,20 @@ function filterLines(filters) {
     : 'Varie les niveaux de difficulté, avec une majorité de recettes faciles.');
   if (filters.maxMinutes) {
     lines.push(`Temps total (préparation + cuisson) inférieur ou égal à ${filters.maxMinutes} minutes pour chaque recette.`);
+  }
+  const origins = (filters.origins ?? []).filter((id) => id !== 'monde').map((id) => originOf(id)?.label.toLowerCase()).filter(Boolean);
+  if (filters.origins?.includes('monde')) {
+    lines.push('Tour du monde : 5 recettes de cuisines du monde toutes différentes (pas de cuisine française).');
+  } else if (origins.length === 1) {
+    lines.push(`Toutes les recettes doivent être de cuisine ${origins[0]}.`);
+  } else if (origins.length > 1) {
+    lines.push(`Cuisines demandées : ${origins.join(', ')}. Répartis les recettes entre ces origines (au moins une de chaque si possible).`);
+  }
+  if ((filters.wish ?? '').trim()) {
+    lines.push(`Envie de l'utilisateur : « ${filters.wish.trim()} ». Toutes les recettes doivent y répondre.`);
+  }
+  if (maxPurchases(filters) > 2) {
+    lines.push(`Recettes fidèles à leur cuisine d'origine : utilise les produits du frigo quand ils s'y prêtent, mais tu peux prévoir jusqu'à ${maxPurchases(filters)} ingrédients à acheter par recette (sauces, épices, féculents typiques).`);
   }
   if (filters.diet === 'vegetarien') {
     lines.push('Toutes les recettes doivent être végétariennes : ni viande, ni poisson, ni fruits de mer (œufs et produits laitiers autorisés). Ignore les produits du frigo incompatibles.');
@@ -753,6 +864,7 @@ export async function generateRecipes({ key, model, priority, others, shopping, 
       prepMinutes: Number(r.temps_preparation_minutes) || 15,
       servings: Number(r.portions) || servings,
       diet: ['vegan', 'vegetarien', 'omnivore'].includes(r.regime) ? r.regime : 'omnivore',
+      origin: originOf(r.origine) ? r.origine : 'autre',
       kcal: Number(r.calories_par_portion) > 0 ? Math.round(Number(r.calories_par_portion)) : null,
       batchCooking: Boolean(r.batch_cooking),
       storageDays: Number(r.conservation_jours) || 0,

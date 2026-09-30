@@ -613,3 +613,36 @@ h2.section.pending { color: var(--herb-strong); }
   flex: 1; min-width: 0; min-height: 34px; border: 1px solid var(--line); border-radius: 10px;
   padding: 0 10px; background: var(--bg); font-size: 16px; outline: none;
 }
+
+/* ---------- Correctifs d'affichage (captures du 30/09) ---------- */
+
+/* Interrupteurs : la règle générale « .field input » (largeur extensible, 40 px de haut,
+   fond transparent) les déformait. Taille fixe, comme sur iOS. */
+.field input.switch {
+  flex: none; width: 51px; height: 31px; min-height: 0; padding: 0;
+  background: var(--surface-2); text-align: left;
+}
+.field input.switch:checked { background: var(--herb); }
+
+/* Libellés sur deux lignes : ils passent à la ligne au lieu de pousser
+   l'interrupteur ou le compteur hors de l'écran. */
+.field > .label-stack { flex: 1 1 auto; min-width: 0; }
+.field > .label-stack small { line-height: 1.3; }
+.stepper { flex: none; }
+.stepper output { min-width: 36px; padding: 0 8px; white-space: nowrap; }
+
+/* Menus déroulants : un peu plus de place pour le libellé choisi. */
+.field select { max-width: 70%; }
+
+/* ---------- Origine des recettes ---------- */
+
+.field-button { width: 100%; text-align: left; color: inherit; }
+.field-button .chevron { font-size: 26px; line-height: 1; color: var(--muted); flex: none; }
+.field-button .label-stack small { color: var(--herb-strong); font-weight: 600; }
+.origin-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+.origin-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 6px 14px;
+  border-radius: 999px; background: var(--surface); border: 1.5px solid var(--line);
+  font-size: 15px; font-weight: 600; color: var(--ink);
+}
+.origin-chip[aria-pressed="true"] { background: var(--herb-soft); border-color: var(--herb); color: var(--herb-strong); }
