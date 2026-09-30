@@ -60,7 +60,13 @@ export function daysUntil(iso, today = new Date()) {
   return Math.round((date - startOfDay(today)) / DAY);
 }
 
+export function hasDate(iso) {
+  return parseISODate(iso) !== null;
+}
+
+/** 'expired' | 'soon' | 'ok' | 'pending' (date à compléter). */
 export function statusOf(iso, alertDays, today = new Date()) {
+  if (!hasDate(iso)) return 'pending';
   const days = daysUntil(iso, today);
   if (days < 0) return 'expired';
   if (days <= Math.max(0, alertDays)) return 'soon';
@@ -68,6 +74,7 @@ export function statusOf(iso, alertDays, today = new Date()) {
 }
 
 export function expiryLabel(iso, today = new Date()) {
+  if (!hasDate(iso)) return 'Date à compléter';
   const days = daysUntil(iso, today);
   if (days < -1) return `Périmé depuis ${-days} jours`;
   if (days === -1) return 'Périmé depuis hier';
@@ -80,6 +87,90 @@ export function expiryLabel(iso, today = new Date()) {
 export function formatDate(iso, options = { day: 'numeric', month: 'short' }) {
   const date = parseISODate(iso);
   return date ? date.toLocaleDateString('fr-FR', options) : '';
+}
+
+/** « 2 × 2 kg », « 3 unités », « 500 g » (une seule unité). */
+export function quantityLabel(product) {
+  const count = Math.max(1, Math.round(Number(product?.count) || 1));
+  const size = String(product?.quantity ?? '').trim();
+  if (count === 1) return size;
+  return size ? `${count} × ${size}` : `${count} unités`;
+}
+
+const UNIT_WORDS = 'sachets?|paquets?|pots?|bo[iî]tes?|bouteilles?|briques?|packs?|filets?|barquettes?|unit[ée]s?|pi[eè]ces?|tranches?|canettes?|conserves?|bocaux|bocal';
+
+/**
+ * Sépare le nombre d'unités du poids : « 2 sachets de 2 kg » → { count: 2, quantity: '2 kg' },
+ * « 4 x 125 g » → { 4, '125 g' }, « 3 » → { 3, '' }, « 2 kg » → { 1, '2 kg' }.
+ */
+export function splitCount(text) {
+  const t = String(text ?? '').trim();
+  let m = /^(\d{1,3})\s*[x×*]\s*(.+)$/i.exec(t);
+  if (m) return { count: Number(m[1]), quantity: m[2].trim() };
+  m = /^(\d{1,3})$/.exec(t);
+  if (m) return { count: Number(m[1]), quantity: '' };
+  m = new RegExp(`^(\\d{1,3})\\s+(?:${UNIT_WORDS})(?:\\s+(?:de\\s+|d')?(.+))?$`, 'i').exec(t);
+  if (m) return { count: Number(m[1]), quantity: (m[2] ?? '').trim() };
+  return { count: 1, quantity: t };
+}
+
+// ---------------------------------------------------------------------------
+// Quantités d'une recette selon le nombre de personnes
+// ---------------------------------------------------------------------------
+
+const FRACTIONS = { '½': 0.5, '¼': 0.25, '¾': 0.75, '⅓': 1 / 3, '⅔': 2 / 3 };
+
+function parseNumber(text) {
+  if (!text) return null;
+  if (FRACTIONS[text] !== undefined) return FRACTIONS[text];
+  const fraction = /^(\d+)\/(\d+)$/.exec(text);
+  if (fraction) return Number(fraction[2]) ? Number(fraction[1]) / Number(fraction[2]) : null;
+  const value = Number(text.replace(',', '.'));
+  return Number.isFinite(value) ? value : null;
+}
+
+/** Lit « 250 g », « 1/2 oignon », « 1 ½ c. à soupe », « 2 pots » → { value, unit } ou null. */
+export function parseAmount(text) {
+  const m = /^\s*(\d+\/\d+|\d+(?:[.,]\d+)?|[½¼¾⅓⅔])(?:\s*([½¼¾⅓⅔]|\d+\/\d+)(?!\d))?\s*(.*)$/.exec(String(text ?? ''));
+  if (!m) return null;
+  const whole = parseNumber(m[1]);
+  if (whole === null) return null;
+  const part = m[2] ? parseNumber(m[2]) : 0;
+  return { value: whole + (part ?? 0), unit: m[3].trim() };
+}
+
+function formatNumber(value) {
+  return String(Math.round(value * 100) / 100).replace('.', ',');
+}
+
+/** Arrondi lisible selon l'unité : 437 g → 440 g ; 1,5 oignon → 1 ½ oignon. */
+export function formatAmount(value, unit = '') {
+  const u = unit.trim();
+  const key = u.toLowerCase();
+  let text;
+  if (key === 'g' || key === 'ml') {
+    const step = value >= 100 ? 10 : value >= 20 ? 5 : 1;
+    text = String(Math.max(step, Math.round(value / step) * step));
+  } else if (key === 'kg' || key === 'l') {
+    text = formatNumber(Math.max(0.05, Math.round(value * 20) / 20));
+  } else if (key === 'cl') {
+    text = String(Math.max(1, Math.round(value)));
+  } else {
+    // Pièces, pots, cuillères… : au demi près.
+    const halves = Math.max(1, Math.round(value * 2));
+    const whole = Math.floor(halves / 2);
+    text = halves % 2 ? (whole ? `${whole} ½` : '½') : String(whole);
+  }
+  return u ? `${text} ${u}` : text;
+}
+
+/** Quantité d'un ingrédient pour un facteur donné (1 = recette d'origine). */
+export function scaleIngredient(ingredient, factor = 1) {
+  const original = ingredient.quantity ?? '';
+  if (!factor || Math.abs(factor - 1) < 1e-9) return original;
+  if (Number(ingredient.amount) > 0) return formatAmount(ingredient.amount * factor, ingredient.unit ?? '');
+  const parsed = parseAmount(original);
+  return parsed ? formatAmount(parsed.value * factor, parsed.unit) : original; // « une pincée » : inchangé
 }
 
 export function plural(count, singular, pluralForm) {
@@ -445,7 +536,10 @@ Règles :
 - Tout autre ingrédient nécessaire est en source « a_acheter » ; limite-les au strict minimum (2 au maximum par recette).
 - Pour chaque ingrédient venant du frigo, renseigne ref_stock avec la référence exacte (ex. « P3 ») ; pour la liste de courses, source « courses ».
 - Sécurité alimentaire : un produit dont la date est dépassée ne peut être utilisé que s'il s'agit d'une DDM (épicerie sèche, conserves, biscuits, pâtes…) après vérification de son aspect, et tu le signales dans le résumé. N'utilise jamais une viande, un poisson, un produit laitier frais ou un plat traiteur dont la date est dépassée.
-- Temps réalistes (préparation + cuisson). Portions pour 2 personnes, ou 4 à 6 portions pour le batch cooking.
+- Temps réalistes (préparation + cuisson). Respecte le nombre de personnes demandé ; en batch cooking, prévois 2 à 3 repas pour ce nombre de personnes et indique le total dans portions.
+- Pour chaque ingrédient, donne la quantité en texte (quantite) et, si elle est chiffrable, sa valeur numérique (valeur) et son unité (unite : g, kg, ml, cl, L, c. à soupe, c. à café, ou le nom de l'unité comme « pot », vide pour des pièces). valeur = 0 si non chiffrable (« une pincée »).
+- regime : « vegan » si aucun produit d'origine animale, « vegetarien » si ni viande ni poisson ni fruits de mer (œufs et laitages autorisés), sinon « omnivore ». Sois strict (bouillon, gélatine, anchois comptent).
+- calories_par_portion : estimation réaliste des kilocalories d'une portion.
 - conservation_jours : durée réaliste au réfrigérateur en boîte hermétique (0 si le plat se mange tout de suite) ; précise dans conseils_conservation comment conserver, réchauffer, et si le plat se congèle.
 - Étapes courtes et claires, une action par étape, en français.`;
 
@@ -465,7 +559,9 @@ const RECIPE_TOOL = {
             difficulte: { type: 'string', enum: ['facile', 'moyen', 'difficile'] },
             temps_total_minutes: { type: 'integer', description: 'Préparation + cuisson, en minutes.' },
             temps_preparation_minutes: { type: 'integer' },
-            portions: { type: 'integer' },
+            portions: { type: 'integer', description: 'Nombre total de portions.' },
+            regime: { type: 'string', enum: ['vegan', 'vegetarien', 'omnivore'] },
+            calories_par_portion: { type: 'integer', description: 'Estimation en kcal pour une portion.' },
             batch_cooking: { type: 'boolean', description: 'true si la recette se prépare en quantité et se conserve plusieurs jours.' },
             conservation_jours: { type: 'integer', description: 'Jours de conservation au réfrigérateur après préparation.' },
             conseils_conservation: { type: 'string' },
@@ -475,17 +571,20 @@ const RECIPE_TOOL = {
                 type: 'object',
                 properties: {
                   nom: { type: 'string' },
-                  quantite: { type: 'string' },
+                  quantite: { type: 'string', description: 'Quantité lisible, ex. « 250 g », « 2 pots », « une pincée ».' },
+                  valeur: { type: 'number', description: 'Valeur numérique de la quantité (0 si non chiffrable).' },
+                  unite: { type: 'string', description: 'Unité de valeur : g, kg, ml, cl, L, c. à soupe, c. à café, pot… ; vide pour des pièces.' },
                   source: { type: 'string', enum: ['stock', 'courses', 'placard', 'a_acheter'] },
                   ref_stock: { type: 'string', description: 'Référence du produit du frigo (ex. P3), sinon chaîne vide.' }
                 },
-                required: ['nom', 'quantite', 'source', 'ref_stock']
+                required: ['nom', 'quantite', 'valeur', 'unite', 'source', 'ref_stock']
               }
             },
             etapes: { type: 'array', items: { type: 'string' } }
           },
           required: ['titre', 'resume', 'difficulte', 'temps_total_minutes', 'temps_preparation_minutes',
-            'portions', 'batch_cooking', 'conservation_jours', 'conseils_conservation', 'ingredients', 'etapes']
+            'portions', 'regime', 'calories_par_portion', 'batch_cooking', 'conservation_jours', 'conseils_conservation',
+            'ingredients', 'etapes']
         }
       }
     },
@@ -498,6 +597,14 @@ export const DIFFICULTIES = [
   { id: 'moyen', label: 'Moyen' },
   { id: 'difficile', label: 'Difficile' }
 ];
+
+export const DIETS = [
+  { id: '', label: 'Tous' },
+  { id: 'vegetarien', label: 'Végétarien' },
+  { id: 'vegan', label: 'Vegan' }
+];
+
+export const DIET_LABEL = { vegetarien: 'Végétarien', vegan: 'Vegan' };
 
 export const TIME_FILTERS = [
   { max: 0, label: 'Peu importe' },
@@ -514,7 +621,16 @@ export function matchesFilters(recipe, filters) {
   if (filters.difficulty && recipe.difficulty !== filters.difficulty) return false;
   if (filters.maxMinutes && recipe.totalMinutes > filters.maxMinutes) return false;
   if (filters.batchOnly && !isBatchFriendly(recipe)) return false;
+  // Les recettes sans régime ni calories (créées avant) sont écartées par prudence.
+  if (filters.diet === 'vegan' && recipe.diet !== 'vegan') return false;
+  if (filters.diet === 'vegetarien' && !['vegetarien', 'vegan'].includes(recipe.diet)) return false;
+  if (filters.light && !(recipe.kcal > 0 && recipe.kcal <= (filters.lightMax || 500))) return false;
   return true;
+}
+
+/** Recettes enregistrées avant l'arrivée du régime et des calories. */
+export function lacksNutrition(recipe) {
+  return !recipe.diet || !(recipe.kcal > 0);
 }
 
 export function formatMinutes(minutes) {
@@ -532,6 +648,14 @@ function filterLines(filters) {
   if (filters.maxMinutes) {
     lines.push(`Temps total (préparation + cuisson) inférieur ou égal à ${filters.maxMinutes} minutes pour chaque recette.`);
   }
+  if (filters.diet === 'vegetarien') {
+    lines.push('Toutes les recettes doivent être végétariennes : ni viande, ni poisson, ni fruits de mer (œufs et produits laitiers autorisés). Ignore les produits du frigo incompatibles.');
+  } else if (filters.diet === 'vegan') {
+    lines.push("Toutes les recettes doivent être vegan : aucun produit d'origine animale (ni viande, poisson, œufs, lait, beurre, crème, fromage, miel). Ignore les produits du frigo incompatibles.");
+  }
+  if (filters.light) {
+    lines.push(`Recettes légères : au plus ${filters.lightMax || 500} kcal par portion.`);
+  }
   lines.push(filters.batchOnly
     ? 'Toutes les recettes doivent convenir au batch cooking : préparées en plusieurs portions et se conservant au moins 3 jours au réfrigérateur (batch_cooking = true, conservation_jours ≥ 3).'
     : 'Inclue au moins une recette adaptée au batch cooking (se conserve plusieurs jours).');
@@ -539,6 +663,7 @@ function filterLines(filters) {
 }
 
 function promptExpiry(iso) {
+  if (!hasDate(iso)) return 'date de péremption non renseignée';
   const days = daysUntil(iso);
   if (days < 0) return `date dépassée depuis ${-days} j`;
   if (days === 0) return "expire aujourd'hui";
@@ -550,14 +675,14 @@ function promptExpiry(iso) {
  * priority / others : produits { id, name, quantity, category, expiry }
  * shopping : articles { name, quantity, checked }
  */
-export async function generateRecipes({ key, model, priority, others, shopping, filters, count = 5 }) {
+export async function generateRecipes({ key, model, priority, others, shopping, filters, servings = 2, count = 5 }) {
   const refs = new Map();
   let index = 0;
   const describe = (p) => {
     index += 1;
     refs.set(`P${index}`, p.id);
     const parts = [`[P${index}] ${p.name}`];
-    if (p.quantity) parts.push(`quantité : ${p.quantity}`);
+    if (quantityLabel(p)) parts.push(`quantité : ${quantityLabel(p)}`);
     parts.push(category(p.category).label.toLowerCase(), promptExpiry(p.expiry));
     return `- ${parts.join(' – ')}`;
   };
@@ -580,6 +705,7 @@ export async function generateRecipes({ key, model, priority, others, shopping, 
     '',
     'CONTRAINTES :',
     `- Propose exactement ${count} recettes variées (pas deux fois le même type de plat).`,
+    `- Pour ${servings} personne${servings > 1 ? 's' : ''} (portions = ${servings}, sauf batch cooking).`,
     ...(priorityLines.length ? ["- Chaque recette doit utiliser au moins un produit prioritaire ; l'ensemble des recettes doit couvrir tous les produits prioritaires utilisables."] : []),
     ...filterLines(filters).map((l) => `- ${l}`),
     '',
@@ -608,6 +734,8 @@ export async function generateRecipes({ key, model, priority, others, shopping, 
       return {
         name: item.nom ?? '',
         quantity: item.quantite ?? '',
+        amount: Number(item.valeur) > 0 ? Number(item.valeur) : null,
+        unit: String(item.unite ?? '').trim(),
         source,
         productId: product?.id ?? null,
         // Mémorisés pour retrouver le produit s'il est racheté plus tard.
@@ -623,7 +751,9 @@ export async function generateRecipes({ key, model, priority, others, shopping, 
       difficulty: ['facile', 'moyen', 'difficile'].includes(r.difficulte) ? r.difficulte : 'moyen',
       totalMinutes: Number(r.temps_total_minutes) || 30,
       prepMinutes: Number(r.temps_preparation_minutes) || 15,
-      servings: Number(r.portions) || 2,
+      servings: Number(r.portions) || servings,
+      diet: ['vegan', 'vegetarien', 'omnivore'].includes(r.regime) ? r.regime : 'omnivore',
+      kcal: Number(r.calories_par_portion) > 0 ? Math.round(Number(r.calories_par_portion)) : null,
       batchCooking: Boolean(r.batch_cooking),
       storageDays: Number(r.conservation_jours) || 0,
       storageTips: r.conseils_conservation ?? '',
@@ -684,6 +814,68 @@ N'invente jamais de date : laisse une chaîne vide si elle n'est pas lisible.`
     quantity: (input.quantite ?? '').trim(),
     expiry
   };
+}
+
+/**
+ * Lit un ticket de caisse (une ou plusieurs photos, de haut en bas).
+ * Renvoie les produits alimentaires : [{ name, receiptText, category, count, quantity }].
+ * Les dates de péremption ne figurent pas sur un ticket : elles restent « à compléter ».
+ */
+export async function analyzeReceipt({ key, model, images }) {
+  const categoryIds = CATEGORIES.map((c) => c.id);
+  const content = images.map((data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } }));
+  content.push({
+    type: 'text',
+    text: `${images.length > 1 ? `Voici un ticket de caisse en ${images.length} photos, de haut en bas.` : 'Voici un ticket de caisse.'}
+Liste uniquement les produits alimentaires et les boissons achetés.
+- Ignore : hygiène, entretien, sacs, remises, consignes, bons d'achat, sous-totaux, totaux, moyens de paiement.
+- Développe les abréviations en un nom clair en français (ex. « PDT CONSO 2KG » → nom « Pommes de terre », contenance « 2 kg »).
+- nombre : quantité achetée de ce produit (ex. ligne « 2 x 1,19 » ou ligne répétée → 2). Regroupe les lignes identiques.
+- contenance : poids ou volume d'une unité s'il est indiqué (« 500 g », « 1 L »), sinon chaîne vide.
+- Si les photos se chevauchent, ne compte pas deux fois la même ligne.
+- Si la photo n'est pas un ticket de caisse, renvoie une liste vide.`
+  });
+  const input = await callTool({
+    key, model,
+    system: 'Tu lis des tickets de caisse de supermarchés français pour une application anti-gaspillage. Sois précis ; n\'invente aucun produit.',
+    tool: {
+      name: 'lister_produits',
+      description: 'Liste les produits alimentaires du ticket de caisse.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          produits: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                nom: { type: 'string', description: 'Nom clair en français.' },
+                texte_ticket: { type: 'string', description: 'Libellé tel qu\'imprimé sur le ticket.' },
+                categorie: { type: 'string', enum: categoryIds },
+                nombre: { type: 'integer', description: "Nombre d'unités achetées (1 par défaut)." },
+                contenance: { type: 'string', description: 'Poids ou volume d\'une unité, sinon chaîne vide.' }
+              },
+              required: ['nom', 'texte_ticket', 'categorie', 'nombre', 'contenance']
+            }
+          }
+        },
+        required: ['produits']
+      }
+    },
+    content,
+    maxTokens: 4000,
+    timeoutMs: 120_000
+  });
+
+  return (input.produits ?? [])
+    .filter((item) => (item.nom ?? '').trim())
+    .map((item) => ({
+      name: item.nom.trim(),
+      receiptText: (item.texte_ticket ?? '').trim(),
+      category: categoryIds.includes(item.categorie) ? item.categorie : 'autre',
+      count: Math.min(99, Math.max(1, Math.round(Number(item.nombre) || 1))),
+      quantity: (item.contenance ?? '').trim()
+    }));
 }
 
 // ---------------------------------------------------------------------------

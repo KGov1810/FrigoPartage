@@ -9,7 +9,7 @@ import {
   collection, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, writeBatch, serverTimestamp,
   disableNetwork, enableNetwork
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
-import { statusOf, daysUntil, resolveIngredient, matchesFilters } from './services.js';
+import { statusOf, daysUntil, hasDate, resolveIngredient, matchesFilters, scaleIngredient } from './services.js';
 
 // ---------------------------------------------------------------------------
 // Réglages locaux
@@ -24,7 +24,9 @@ const DEFAULT_SETTINGS = {
   householdCode: '',
   firebaseConfig: null,
   onboardingDone: false,
-  installHintDismissed: false
+  installHintDismissed: false,
+  servings: 2,          // nombre de personnes proposé pour les recettes
+  lightMaxKcal: 500     // seuil d'une recette « légère » (kcal par portion)
 };
 
 export const MODELS = [
@@ -96,8 +98,14 @@ export function productStatus(product) {
   return statusOf(product.expiry, state.settings.alertDays);
 }
 
+/** Périmés + à consommer vite (hors produits dont la date est à compléter). */
 export function urgentProducts() {
-  return sortedProducts().filter((p) => productStatus(p) !== 'ok');
+  return sortedProducts().filter((p) => ['expired', 'soon'].includes(productStatus(p)));
+}
+
+/** Produits ajoutés sans date (ex. depuis un ticket de caisse). */
+export function pendingProducts() {
+  return sortedProducts().filter((p) => productStatus(p) === 'pending');
 }
 
 export function soonProducts() {
@@ -370,13 +378,14 @@ export function leaveHousehold() {
 // ---------------------------------------------------------------------------
 
 function toProduct(id, d) {
-  if (!d.name || !d.expiry) return null; // document incomplet
+  if (!d.name) return null; // document incomplet (une date vide = « date à compléter »)
   return {
     id,
     name: d.name ?? '',
     expiry: d.expiry ?? '',
     category: d.category ?? 'autre',
     quantity: d.quantity ?? '',
+    count: Number(d.count) >= 1 ? Math.round(Number(d.count)) : 1, // nombre d'unités (anciens produits : 1)
     barcode: d.barcode ?? '',
     addedBy: d.addedBy ?? '',
     createdAt: d.createdAt ?? 0,
@@ -434,6 +443,7 @@ export function saveProduct(product) {
     expiry: product.expiry,
     category: product.category || 'autre',
     quantity: (product.quantity ?? '').trim(),
+    count: Math.max(1, Math.round(Number(product.count) || 1)),
     barcode: product.barcode || '',
     addedBy: product.addedBy || state.settings.userName,
     createdAt: product.createdAt || Date.now(),
@@ -458,17 +468,52 @@ export function restoreProducts(products) {
   products.forEach((p) => saveProduct(p));
 }
 
-export function addShoppingItem(name, quantity = '') {
+/**
+ * Consomme une unité de chaque produit : le nombre diminue de 1,
+ * et le produit n'est retiré du frigo qu'à la dernière unité.
+ * Renvoie l'état d'avant (pour « Annuler ») et ce qui a été retiré ou diminué.
+ */
+export function consumeOne(ids) {
+  if (!canWrite()) return { before: [], removed: [], decremented: [] };
+  const before = state.products.filter((p) => ids.includes(p.id)).map((p) => ({ ...p }));
+  const removed = before.filter((p) => (p.count ?? 1) <= 1);
+  const decremented = before.filter((p) => (p.count ?? 1) > 1);
+  if (removed.length) removeProducts(removed.map((p) => p.id));
+  decremented.forEach((p) => saveProduct({ ...p, count: p.count - 1 }));
+  return { before, removed, decremented };
+}
+
+/**
+ * Ajoute un article. Renvoie 'added', 'updated' (article déjà présent dont la
+ * quantité a été remplacée, si updateQuantity) ou false (déjà présent).
+ */
+export function addShoppingItem(name, quantity = '', { updateQuantity = false } = {}) {
   const trimmed = (name ?? '').trim();
+  const amount = String(quantity ?? '').trim();
   if (!trimmed || !canWrite()) return false;
-  const exists = state.shopping.some((i) => !i.checked
+  const existing = state.shopping.find((i) => !i.checked
     && i.name.localeCompare(trimmed, 'fr', { sensitivity: 'base' }) === 0);
-  if (exists) return false;
+  if (existing) {
+    if (updateQuantity && amount && amount !== existing.quantity) {
+      updateShoppingItem(existing.id, { quantity: amount });
+      return 'updated';
+    }
+    return false;
+  }
   const id = crypto.randomUUID();
   write(setDoc(ref('courses', id), {
-    name: trimmed, quantity, checked: false, addedBy: state.settings.userName, createdAt: Date.now()
+    name: trimmed, quantity: amount, checked: false, addedBy: state.settings.userName, createdAt: Date.now()
   }));
-  return true;
+  return 'added';
+}
+
+/** Modifie le nom et/ou la quantité d'un article. */
+export function updateShoppingItem(id, patch) {
+  if (!canWrite()) return;
+  const data = {};
+  if (patch.name !== undefined && patch.name.trim()) data.name = patch.name.trim();
+  if (patch.quantity !== undefined) data.quantity = String(patch.quantity).trim();
+  if (Object.keys(data).length) write(updateDoc(ref('courses', id), data));
 }
 
 export function toggleShoppingItem(id) {
@@ -490,10 +535,37 @@ export function clearCheckedShopping() {
   deleteShoppingItems(state.shopping.filter((i) => i.checked).map((i) => i.id));
 }
 
-/** Ajoute aux courses les ingrédients absents du frigo actuel. Renvoie le nombre ajouté. */
-export function addMissingIngredients(recipe) {
+/** Ajoute aux courses les ingrédients absents du frigo actuel (quantités ajustées). Renvoie le nombre ajouté. */
+export function addMissingIngredients(recipe, factor = 1) {
   return recipeAvailability(recipe).missing
-    .reduce((count, i) => count + (addShoppingItem(i.name, i.quantity) ? 1 : 0), 0);
+    .reduce((count, i) => count + (addShoppingItem(i.name, scaleIngredient(i, factor)) ? 1 : 0), 0);
+}
+
+/**
+ * Ajoute d'un coup les produits d'un ticket de caisse (date à compléter)
+ * et retire de la liste de courses les articles achetés.
+ */
+export function addReceiptProducts(items, shoppingIdsToRemove = []) {
+  if (!canWrite() || !items.length) return 0;
+  const batch = writeBatch(db);
+  const now = Date.now();
+  items.forEach((item, index) => {
+    batch.set(ref('produits', crypto.randomUUID()), {
+      name: item.name.trim(),
+      expiry: '',
+      category: item.category || 'autre',
+      quantity: (item.quantity ?? '').trim(),
+      count: Math.max(1, Math.round(Number(item.count) || 1)),
+      barcode: '',
+      addedBy: state.settings.userName,
+      createdAt: now + index,
+      image: '',
+      imageUrl: ''
+    });
+  });
+  shoppingIdsToRemove.forEach((id) => batch.delete(ref('courses', id)));
+  write(batch.commit());
+  return items.length;
 }
 
 export function saveRecipes(recipes) {
@@ -573,7 +645,7 @@ export function recipeAvailability(recipe, priorityIds = new Set()) {
   const inFridge = [...new Map(rows.filter((r) => r.product).map((r) => [r.product.id, r.product])).values()];
   const missing = rows.filter((r) => !r.product && r.ingredient.source !== 'placard').map((r) => r.ingredient);
   const priorityUsed = inFridge.filter((p) => priorityIds.has(p.id)).length;
-  const urgentUsed = inFridge.filter((p) => productStatus(p) !== 'ok').length;
+  const urgentUsed = inFridge.filter((p) => ['expired', 'soon'].includes(productStatus(p))).length;
   return { rows, inFridge, missing, priorityUsed, urgentUsed };
 }
 
@@ -626,5 +698,5 @@ export function errorMessage(error) {
 
 // Utilisé par l'interface pour la pastille de l'icône.
 export function badgeCount() {
-  return state.products.filter((p) => daysUntil(p.expiry) <= state.settings.alertDays).length;
+  return state.products.filter((p) => hasDate(p.expiry) && daysUntil(p.expiry) <= state.settings.alertDays).length;
 }

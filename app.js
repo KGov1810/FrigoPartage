@@ -15,7 +15,7 @@ const ui = {
   search: '',
   priority: new Set(),
   customPriority: false,
-  filters: { difficulty: '', maxMinutes: 0, batchOnly: false },
+  filters: { difficulty: '', maxMinutes: 0, batchOnly: false, diet: '', light: false },
   favoritesOnly: false,
   generating: false,
   recipeNote: null,
@@ -23,6 +23,15 @@ const ui = {
 };
 
 const DIFFICULTY_LABEL = { facile: 'Facile', moyen: 'Moyen', difficile: 'Difficile' };
+
+/** Filtres de recettes + seuil « léger » choisi dans les Réglages. */
+function currentFilters() {
+  return { ...ui.filters, lightMax: state.settings.lightMaxKcal || 500 };
+}
+
+function servingsLabel(n) {
+  return `${n} personne${n > 1 ? 's' : ''}`;
+}
 const SOURCE = {
   stock: { label: 'Au frigo', icon: I.fridge },
   courses: { label: 'Liste de courses', icon: I.cart },
@@ -36,13 +45,17 @@ const SOURCE = {
 
 function thumb(product) {
   const src = product.image || product.imageUrl;
+  const count = (product.count ?? 1) > 1 ? html`<b class="count" aria-hidden="true">×${product.count}</b>` : '';
   return src
-    ? html`<span class="thumb"><img src="${src}" alt="" loading="lazy"></span>`
-    : html`<span class="thumb">${S.category(product.category).emoji}</span>`;
+    ? html`<span class="thumb"><img src="${src}" alt="" loading="lazy">${count}</span>`
+    : html`<span class="thumb">${S.category(product.category).emoji}${count}</span>`;
 }
 
 /** Le compteur de jours, façon magnet de frigo. */
 function dayCounter(iso, status) {
+  if (!S.hasDate(iso)) {
+    return html`<span class="days pending" role="img" aria-label="Date à compléter"><b>?</b><small>date</small></span>`;
+  }
   const days = S.daysUntil(iso);
   let number;
   let label;
@@ -60,6 +73,7 @@ function dayCounter(iso, status) {
 }
 
 function shortExpiry(iso) {
+  if (!S.hasDate(iso)) return 'date ?';
   const days = S.daysUntil(iso);
   if (days < 0) return 'périmé';
   if (days === 0) return 'auj.';
@@ -166,24 +180,26 @@ function fridgeList() {
     || simplify(S.category(p.category).label).includes(query));
   if (!items.length) return html`<p class="hint">Aucun produit ne correspond à « ${ui.search.trim()} ».</p>`;
 
-  const groups = [['expired', 'Périmés'], ['soon', 'À consommer vite'], ['ok', 'Au frigo']];
+  const groups = [['pending', 'Date à compléter'], ['expired', 'Périmés'], ['soon', 'À consommer vite'], ['ok', 'Au frigo']];
   return groups.map(([status, title]) => {
     const list = items.filter((p) => store.productStatus(p) === status);
     if (!list.length) return '';
-    return html`<h2 class="section ${status}">${title}<small>${list.length}</small></h2><div class="list">${list.map(productRow)}</div>`;
+    const hint = status === 'pending'
+      ? html`<p class="hint">Touchez un produit pour indiquer sa date (ou « Lire la date » pour la photographier).</p>` : '';
+    return html`<h2 class="section ${status}">${title}<small>${list.length}</small></h2>${hint}<div class="list">${list.map(productRow)}</div>`;
   });
 }
 
 function productRow(product) {
   const status = store.productStatus(product);
   const meta = [
-    product.quantity,
-    `jusqu'au ${S.formatDate(product.expiry)}`,
+    S.quantityLabel(product),
+    S.hasDate(product.expiry) ? `jusqu'au ${S.formatDate(product.expiry)}` : 'date à compléter',
     product.addedBy ? `par ${product.addedBy}` : ''
   ].filter(Boolean).join(', ');
   return html`
     <div class="product" data-id="${product.id}">
-      <button class="consume" data-action="consume" data-id="${product.id}" aria-label="Consommé : retirer ${product.name} du frigo"></button>
+      <button class="consume" data-action="consume" data-id="${product.id}" aria-label="${(product.count ?? 1) > 1 ? `Consommé : un ${product.name} de moins (il en reste ${product.count - 1})` : `Consommé : retirer ${product.name} du frigo`}"></button>
       <button class="product-main" data-action="edit" data-id="${product.id}">
         ${thumb(product)}
         <span class="product-text"><span class="product-name">${product.name}</span><span class="product-meta">${meta}</span></span>
@@ -192,17 +208,24 @@ function productRow(product) {
     </div>`;
 }
 
+/** Le rond d'un produit consomme une unité ; le produit disparaît à la dernière. */
 function consume(id) {
+  const product = store.productById(id);
+  if (!product) return;
+  const last = (product.count ?? 1) <= 1;
   const row = screen.querySelector(`.product[data-id="${CSS.escape(id)}"]`);
-  row?.classList.add('leaving');
+  if (last) row?.classList.add('leaving');
   setTimeout(() => {
-    const removed = store.removeProducts([id]);
-    if (removed.length) {
-      toast(`${removed[0].name} : retiré du frigo`, 'Annuler', () => store.restoreProducts(removed));
-    } else {
+    const { before } = store.consumeOne([id]);
+    if (!before.length) {
       row?.classList.remove('leaving');
+      return;
     }
-  }, 180);
+    const message = last
+      ? `${product.name} : retiré du frigo`
+      : `${product.name} : il en reste ${product.count - 1}`;
+    toast(message, 'Annuler', () => store.restoreProducts(before));
+  }, last ? 180 : 0);
 }
 
 /** Ouvre le scanner tout de suite (dans le geste de l'utilisateur), puis la fiche avec le code lu. */
@@ -217,6 +240,7 @@ function openAddMenu() {
       <div class="menu">
         <button class="menu-item" data-action="scan">${I.barcode}<span>Scanner un code-barres<small>Nom et photo retrouvés automatiquement</small></span></button>
         <button class="menu-item" data-action="photo">${I.camera}<span>Prendre le produit en photo<small>${hasKey ? 'Claude reconnaît le produit et sa date' : "Lecture de la date sur l'emballage"}</small></span></button>
+        <button class="menu-item" data-action="ticket">${I.receipt}<span>Scanner un ticket de caisse<small>${hasKey ? 'Tous les produits des courses d\'un coup' : 'Nécessite une clé Claude (Réglages)'}</small></span></button>
         <button class="menu-item" data-action="manual">${I.pencil}<span>Saisir à la main</span></button>
         <button class="secondary" data-action="close">Annuler</button>
       </div>`,
@@ -233,6 +257,12 @@ function openAddMenu() {
       manual: () => {
         sheet.close();
         openEditor({ mode: 'manual' });
+      },
+      ticket: () => {
+        // Photo choisie dans le geste (règle d'iOS) ; sans clé, la fiche explique quoi faire.
+        const filePromise = hasKey ? pickImage({ camera: false }) : null;
+        sheet.close();
+        openReceipt(filePromise);
       }
     }
   });
@@ -245,11 +275,12 @@ function openAddMenu() {
 function openEditor({ product = null, draft = null, mode = 'manual', filePromise = null, shoppingItemId = null, barcode = '' } = {}) {
   const isNew = !product;
   const p = {
-    id: crypto.randomUUID(), name: '', expiry: S.isoInDays(7), category: 'autre', quantity: '',
+    id: crypto.randomUUID(), name: '', expiry: S.isoInDays(7), category: 'autre', quantity: '', count: 1,
     barcode: '', addedBy: '', createdAt: 0, image: '', imageUrl: '',
     ...(draft ?? {}), ...(product ?? {})
   };
-  const view = { dateTouched: !isNew, busy: '', info: '', error: '' };
+  const view = { dateTouched: !isNew, busy: '', info: '', error: '', sameProductId: null };
+  if (!isNew && !S.hasDate(p.expiry)) view.info = 'Date à compléter : saisissez-la, ou touchez « Lire la date » pour la photographier.';
   const hasKey = () => Boolean(state.settings.claudeKey);
   const claude = () => ({ key: state.settings.claudeKey, model: state.settings.model });
 
@@ -276,8 +307,16 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
         p.imageUrl = '';
         sheet.update();
       },
+      'count-minus': () => {
+        p.count = Math.max(1, (p.count ?? 1) - 1);
+        sheet.update();
+      },
+      'count-plus': () => {
+        p.count = Math.min(999, (p.count ?? 1) + 1);
+        sheet.update();
+      },
       'to-shopping': () => {
-        view.info = store.addShoppingItem(p.name, p.quantity) ? 'Ajouté à la liste de courses.' : 'Déjà dans la liste de courses.';
+        view.info = store.addShoppingItem(p.name, S.quantityLabel(p)) ? 'Ajouté à la liste de courses.' : 'Déjà dans la liste de courses.';
         view.error = '';
         sheet.update();
       },
@@ -285,6 +324,15 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
         const removed = store.removeProducts([p.id]);
         sheet.close();
         if (removed.length) toast(`${removed[0].name} : retiré du frigo`, 'Annuler', () => store.restoreProducts(removed));
+      },
+      'add-to-same': () => {
+        const same = store.productById(view.sameProductId);
+        if (!same) return;
+        const count = (same.count ?? 1) + (p.count ?? 1);
+        store.saveProduct({ ...same, count });
+        if (shoppingItemId) store.deleteShoppingItems([shoppingItemId]);
+        toast(`${same.name} : ${count} au frigo`);
+        sheet.close();
       }
     },
     onInput(event) {
@@ -298,8 +346,8 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
       } else if (t.name === 'category' && event.type === 'change') {
         p.category = t.value;
         sheet.update();
-      } else if (t.name === 'expiry' && event.type === 'change' && t.value) {
-        p.expiry = t.value;
+      } else if (t.name === 'expiry' && event.type === 'change') {
+        p.expiry = t.value; // vide = « date à compléter »
         view.dateTouched = true;
         // Mise à jour partielle : ne pas refermer le sélecteur de date d'iOS.
         const status = sheet.panel.querySelector('.expiry-status');
@@ -323,6 +371,7 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
       <div class="sheet-body">
         ${view.info ? html`<p class="note ok">${view.info}</p>` : ''}
         ${view.error ? html`<p class="note warn">${view.error}</p>` : ''}
+        ${sameProductNote()}
         <div class="capture">
           <button data-action="scan">${I.barcode}Code-barres</button>
           <button data-action="photo">${I.camera}Photo du produit</button>
@@ -334,7 +383,15 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
           <label class="field"><span>Catégorie</span>
             <select name="category">${S.CATEGORIES.map((c) => html`<option value="${c.id}" ${c.id === p.category ? raw('selected') : ''}>${c.emoji} ${c.label}</option>`)}</select>
           </label>
-          <label class="field"><span>Quantité</span><input name="quantity" value="${p.quantity}" placeholder="500 g, 2 pots…" autocomplete="off"></label>
+          <div class="field"><span>Nombre</span>
+            <div class="stepper">
+              <button data-action="count-minus" aria-label="Un de moins" ${(p.count ?? 1) <= 1 ? raw('disabled') : ''}>−</button>
+              <output aria-live="polite">${p.count ?? 1}</output>
+              <button data-action="count-plus" aria-label="Un de plus">+</button>
+            </div>
+          </div>
+          <label class="field"><span>Poids ou contenance</span><input name="quantity" value="${p.quantity}" placeholder="2 kg, 500 g, 1 L…" autocomplete="off"></label>
+          ${(p.count ?? 1) > 1 && p.quantity.trim() ? html`<p class="hint inset">Au frigo : ${S.quantityLabel(p)}</p>` : ''}
           ${p.image || p.imageUrl ? html`<button class="row-button danger" data-action="remove-photo">${I.trash}Retirer la photo</button>` : ''}
         </section>
         <section class="group">
@@ -355,9 +412,21 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
       ${view.busy ? html`<div class="busy"><span class="spinner"></span><p>${view.busy}</p></div>` : ''}`;
   }
 
+  /** Produit identique (même code-barres) déjà au frigo : proposer d'augmenter son nombre. */
+  function sameProductNote() {
+    const same = isNew && view.sameProductId ? store.productById(view.sameProductId) : null;
+    if (!same) return '';
+    return html`
+      <div class="note ok same-product">
+        <span>Déjà au frigo : ${same.name} (${S.quantityLabel(same) || '1'}, jusqu'au ${S.formatDate(same.expiry)}).</span>
+        <button class="secondary" data-action="add-to-same">Ajouter ${p.count ?? 1} à ce produit</button>
+        <small>Même date de péremption ? Ajoutez-le à l'existant. Sinon, enregistrez-le à part.</small>
+      </div>`;
+  }
+
   function save() {
     if (!p.name.trim() || view.busy) return;
-    if (!S.parseISODate(p.expiry)) {
+    if (p.expiry && !S.parseISODate(p.expiry)) {
       view.error = 'Indiquez une date de péremption valide.';
       sheet.update();
       return;
@@ -400,9 +469,15 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
       }
       p.name = info.name;
       p.category = info.category;
-      if (!p.quantity && info.quantity) p.quantity = info.quantity;
+      if (!p.quantity && info.quantity) {
+        const split = S.splitCount(info.quantity);
+        p.quantity = split.quantity;
+        if ((p.count ?? 1) === 1) p.count = split.count;
+      }
       if (!p.image && info.imageUrl) p.imageUrl = info.imageUrl;
-      view.info = 'Produit trouvé. Indiquez la date de péremption, ou touchez « Lire la date ».';
+      view.sameProductId = state.products.find((x) => x.id !== p.id && x.barcode
+        && S.normalizeBarcode(x.barcode) === S.normalizeBarcode(digits))?.id ?? null;
+      view.info = 'Produit trouvé. Indiquez le nombre et la date de péremption (ou touchez « Lire la date »).';
     });
   }
 
@@ -420,7 +495,11 @@ function openEditor({ product = null, draft = null, mode = 'manual', filePromise
         }
         if (result.name) p.name = result.name;
         p.category = result.category;
-        if (!p.quantity) p.quantity = result.quantity;
+        if (!p.quantity && result.quantity) {
+          const split = S.splitCount(result.quantity);
+          p.quantity = split.quantity;
+          if ((p.count ?? 1) === 1) p.count = split.count;
+        }
         if (result.expiry) {
           p.expiry = result.expiry;
           view.dateTouched = true;
@@ -681,6 +760,191 @@ function openScanner(onCode) {
 }
 
 // ===========================================================================
+// Ticket de caisse
+// ===========================================================================
+
+/**
+ * Photos du ticket → analyse par Claude → vérification → ajout au frigo.
+ * Les dates ne figurent pas sur un ticket : les produits arrivent « date à compléter ».
+ */
+function openReceipt(firstFilePromise) {
+  const view = { stage: 'photos', photos: [], items: [], busy: '', error: '' };
+  const hasKey = () => Boolean(state.settings.claudeKey);
+
+  const sheet = openSheet({
+    tall: true,
+    render,
+    actions: {
+      'add-photo': () => {
+        pickImage({ camera: false }).then((file) => file && addPhoto(file));
+      },
+      'remove-photo': (el) => {
+        view.photos.splice(Number(el.dataset.index), 1);
+        sheet.update();
+      },
+      analyze: () => analyze(),
+      'toggle-line': (el) => {
+        const item = view.items[Number(el.dataset.index)];
+        item.selected = !item.selected;
+        sheet.update();
+      },
+      'line-minus': (el) => {
+        const item = view.items[Number(el.dataset.index)];
+        item.count = Math.max(1, item.count - 1);
+        sheet.update();
+      },
+      'line-plus': (el) => {
+        const item = view.items[Number(el.dataset.index)];
+        item.count = Math.min(99, item.count + 1);
+        sheet.update();
+      },
+      'back-to-photos': () => {
+        view.stage = 'photos';
+        view.items = [];
+        sheet.update();
+      },
+      confirm: () => confirmItems()
+    },
+    onInput(event) {
+      const t = event.target;
+      const item = view.items[Number(t.dataset.index)];
+      if (!item) return;
+      if (t.dataset.field === 'name') item.name = t.value;
+      if (t.dataset.field === 'quantity') item.quantity = t.value;
+    }
+  });
+
+  function selected() {
+    return view.items.filter((i) => i.selected && i.name.trim());
+  }
+
+  function render() {
+    const head = view.stage === 'review'
+      ? html`<button class="link strong" data-action="confirm" ${selected().length ? '' : raw('disabled')}>Ajouter</button>`
+      : html`<span></span>`;
+    return html`
+      <header class="sheet-head">
+        <button class="link" data-action="close">Annuler</button>
+        <h2>Ticket de caisse</h2>
+        ${head}
+      </header>
+      <div class="sheet-body">
+        ${view.error ? html`<p class="note warn">${view.error}</p>` : ''}
+        ${!hasKey()
+          ? html`<p class="note warn">La lecture d'un ticket nécessite une clé Claude : ajoutez-la dans Réglages → Recettes et photos.</p>`
+          : view.stage === 'photos' ? photosStep() : reviewStep()}
+      </div>
+      ${view.busy ? html`<div class="busy"><span class="spinner"></span><p>${view.busy}</p></div>` : ''}`;
+  }
+
+  function photosStep() {
+    return html`
+      <p class="hint">Photographiez le ticket bien à plat, avec de la lumière. S'il est long, prenez plusieurs photos de haut en bas. Une capture d'écran de commande en ligne fonctionne aussi.</p>
+      ${view.photos.length ? html`
+        <div class="receipt-photos">
+          ${view.photos.map((photo, index) => html`
+            <div class="receipt-photo"><img src="${photo.preview}" alt="Photo ${index + 1} du ticket">
+              <button class="icon-btn" data-action="remove-photo" data-index="${index}" aria-label="Retirer la photo ${index + 1}">${I.x}</button>
+            </div>`)}
+        </div>` : ''}
+      <div class="row-actions">
+        <button class="secondary" data-action="add-photo">${I.camera}${view.photos.length ? 'Ajouter une photo (suite du ticket)' : 'Photographier le ticket'}</button>
+        ${view.photos.length ? html`<button class="primary" data-action="analyze">${I.sparkle}Lire le ticket</button>` : ''}
+      </div>
+      <p class="hint">La photo est envoyée à Claude pour être lue ; elle n'est pas conservée dans l'app.</p>`;
+  }
+
+  function reviewStep() {
+    if (!view.items.length) {
+      return html`
+        <p class="note warn">Aucun produit alimentaire reconnu sur ce ticket.</p>
+        <button class="secondary" data-action="back-to-photos">Reprendre les photos</button>`;
+    }
+    const onList = view.items.filter((i) => i.selected && i.shoppingId);
+    return html`
+      <p class="note ok">${S.plural(view.items.length, 'produit reconnu', 'produits reconnus')}. Vérifiez les noms et les nombres ; décochez ce qui ne va pas au frigo. Les dates de péremption seront à compléter.</p>
+      <section class="group">
+        ${view.items.map((item, index) => html`
+          <div class="receipt-line ${item.selected ? '' : 'off'}">
+            <button class="pick-box" role="checkbox" aria-checked="${item.selected}" data-action="toggle-line" data-index="${index}" aria-label="Garder ${item.name}"><span class="box">${I.check}</span></button>
+            <span class="thumb">${S.category(item.category).emoji}</span>
+            <div class="receipt-fields">
+              <input data-field="name" data-index="${index}" value="${item.name}" aria-label="Nom du produit" autocomplete="off">
+              <small>${item.receiptText ? `« ${item.receiptText} »` : ''}${item.shoppingId ? html` <b class="on-list">sur votre liste</b>` : ''}</small>
+              <div class="receipt-qty">
+                <div class="stepper small">
+                  <button data-action="line-minus" data-index="${index}" aria-label="Un de moins" ${item.count <= 1 ? raw('disabled') : ''}>−</button>
+                  <output>${item.count}</output>
+                  <button data-action="line-plus" data-index="${index}" aria-label="Un de plus">+</button>
+                </div>
+                <input data-field="quantity" data-index="${index}" value="${item.quantity}" placeholder="Poids" aria-label="Poids ou contenance" autocomplete="off">
+              </div>
+            </div>
+          </div>`)}
+      </section>
+      ${onList.length ? html`<p class="hint">Retirés de la liste de courses à l'ajout : ${onList.map((i) => i.shoppingName).join(', ')}.</p>` : ''}
+      <button class="primary" data-action="confirm" ${selected().length ? '' : raw('disabled')}>${I.fridge}Ajouter ${S.plural(selected().length, 'produit')} au frigo</button>
+      <button class="link" data-action="back-to-photos">Reprendre les photos</button>`;
+  }
+
+  async function addPhoto(file) {
+    try {
+      const { dataUrl, base64 } = await S.resizeImage(file, 1568, 0.85);
+      view.photos.push({ preview: dataUrl, base64 });
+      view.error = '';
+    } catch (error) {
+      view.error = error?.message || 'Photo illisible.';
+    }
+    if (sheet.isOpen) sheet.update();
+  }
+
+  async function analyze() {
+    if (!view.photos.length || view.busy) return;
+    view.busy = view.photos.length > 1 ? `Claude lit les ${view.photos.length} photos du ticket…` : 'Claude lit le ticket…';
+    view.error = '';
+    sheet.update();
+    try {
+      const items = await S.analyzeReceipt({
+        key: state.settings.claudeKey,
+        model: state.settings.model,
+        images: view.photos.map((p) => p.base64)
+      });
+      // Repère les articles de la liste de courses achetés (chacun au plus une fois).
+      const used = new Set();
+      view.items = items.map((item) => {
+        const match = state.shopping.find((s) => !used.has(s.id)
+          && (S.nameMatchScore(s.name, item.name) > 0 || S.nameMatchScore(s.name, item.receiptText) > 0));
+        if (match) used.add(match.id);
+        return { ...item, selected: true, shoppingId: match?.id ?? null, shoppingName: match?.name ?? '' };
+      });
+      view.stage = 'review';
+    } catch (error) {
+      view.error = error?.message || String(error);
+    } finally {
+      view.busy = '';
+      if (sheet.isOpen) sheet.update();
+    }
+  }
+
+  function confirmItems() {
+    const items = selected();
+    if (!items.length) return;
+    const shoppingIds = items.map((i) => i.shoppingId).filter(Boolean);
+    const added = store.addReceiptProducts(items, shoppingIds);
+    sheet.close();
+    toast(`${S.plural(added, 'produit ajouté', 'produits ajoutés')} : dates à compléter`);
+    showTab('frigo');
+  }
+
+  if (firstFilePromise) {
+    firstFilePromise.then((file) => {
+      if (file && sheet.isOpen) addPhoto(file);
+    });
+  }
+  return sheet;
+}
+
+// ===========================================================================
 // Écran Recettes
 // ===========================================================================
 
@@ -701,8 +965,11 @@ const recipesView = {
     const canGenerate = hasKey && !ui.generating && (state.products.length > 0 || state.shopping.length > 0);
     const recipes = [...state.recipes]
       .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-      .filter((r) => S.matchesFilters(r, ui.filters) && (!ui.favoritesOnly || r.favorite));
-    const compatible = store.compatibleRecipes({ priorityIds: ui.priority, filters: ui.filters });
+      .filter((r) => S.matchesFilters(r, currentFilters()) && (!ui.favoritesOnly || r.favorite));
+    const compatible = store.compatibleRecipes({ priorityIds: ui.priority, filters: currentFilters() });
+    const servings = state.settings.servings || 2;
+    const nutritionFilter = ui.filters.diet || ui.filters.light;
+    const hiddenOld = nutritionFilter ? state.recipes.filter(S.lacksNutrition).length : 0;
 
     return html`
       <header class="top">
@@ -721,6 +988,17 @@ const recipesView = {
       </section>
 
       <section class="group">
+        <div class="field"><span>Pour</span>
+          <div class="stepper">
+            <button data-action="servings-minus" aria-label="Une personne de moins" ${servings <= 1 ? raw('disabled') : ''}>−</button>
+            <output>${servingsLabel(servings)}</output>
+            <button data-action="servings-plus" aria-label="Une personne de plus" ${servings >= 12 ? raw('disabled') : ''}>+</button>
+          </div>
+        </div>
+        <span class="filter-label">Régime</span>
+        <div class="segmented" role="group" aria-label="Régime">
+          ${S.DIETS.map((d) => html`<button data-action="set-diet" data-value="${d.id}" aria-pressed="${ui.filters.diet === d.id}">${d.label}</button>`)}
+        </div>
         <span class="filter-label">Difficulté</span>
         <div class="segmented" role="group" aria-label="Difficulté">
           ${[['', 'Toutes'], ...S.DIFFICULTIES.map((d) => [d.id, d.label])].map(([value, label]) => html`<button data-action="set-difficulty" data-value="${value}" aria-pressed="${ui.filters.difficulty === value}">${label}</button>`)}
@@ -732,6 +1010,10 @@ const recipesView = {
         <label class="field">
           <span class="label-stack">Batch cooking<small>Se prépare en avance et se garde plusieurs jours</small></span>
           <input type="checkbox" class="switch" id="batch-toggle" ${ui.filters.batchOnly ? raw('checked') : ''}>
+        </label>
+        <label class="field">
+          <span class="label-stack">Léger<small>${state.settings.lightMaxKcal || 500} kcal maximum par portion</small></span>
+          <input type="checkbox" class="switch" id="light-toggle" ${ui.filters.light ? raw('checked') : ''}>
         </label>
       </section>
 
@@ -756,7 +1038,8 @@ const recipesView = {
           : !recipes.length
             ? html`<p class="hint">Aucune recette ne correspond à ces filtres.</p>`
             : recipes.map((recipe) => recipeCard(recipe))}
-      </div>`;
+      </div>
+      ${hiddenOld ? html`<p class="hint">${S.plural(hiddenOld, 'recette ancienne', 'recettes anciennes')} (sans régime ni calories) ${hiddenOld > 1 ? 'sont masquées' : 'est masquée'} avec ces filtres.</p>` : ''}`;
   },
   update() {
     rerenderKeepScroll();
@@ -780,6 +1063,8 @@ function recipeCard(recipe, availability = store.recipeAvailability(recipe, ui.p
         <span>${I.clock}${S.formatMinutes(recipe.totalMinutes)}</span>
         <span>${I.gauge}${DIFFICULTY_LABEL[recipe.difficulty] ?? recipe.difficulty}</span>
         ${S.isBatchFriendly(recipe) ? html`<span>${I.box}Se garde ${S.plural(recipe.storageDays, 'jour')}</span>` : ''}
+        ${recipe.kcal > 0 ? html`<span>${I.flame}≈ ${recipe.kcal} kcal</span>` : ''}
+        ${S.DIET_LABEL[recipe.diet] ? html`<span class="diet">${I.leaf}${S.DIET_LABEL[recipe.diet]}</span>` : ''}
       </span>
       ${fit}
     </button>`;
@@ -794,14 +1079,15 @@ async function generateRecipes() {
     const all = store.sortedProducts();
     const priority = all.filter((p) => ui.priority.has(p.id));
     const others = all.filter((p) => !ui.priority.has(p.id) && store.productStatus(p) !== 'expired');
-    const filters = { ...ui.filters };
+    const filters = currentFilters();
     const recipes = await S.generateRecipes({
       key: state.settings.claudeKey,
       model: state.settings.model,
       priority,
       others,
       shopping: state.shopping,
-      filters
+      filters,
+      servings: state.settings.servings || 2
     });
     store.saveRecipes(recipes);
     if (!recipes.length) {
@@ -857,27 +1143,50 @@ function openProductPicker() {
   });
 }
 
-function recipeShareText(recipe) {
+function recipeShareText(recipe, servings = recipe.servings) {
+  const factor = servings / (recipe.servings || servings);
   const lines = [recipe.title];
   if (recipe.summary) lines.push(recipe.summary);
-  lines.push('', `${S.formatMinutes(recipe.totalMinutes)}, ${(DIFFICULTY_LABEL[recipe.difficulty] ?? '').toLowerCase()}, ${S.plural(recipe.servings, 'portion')}`);
-  lines.push('', 'Ingrédients :', ...recipe.ingredients.map((i) => `- ${i.quantity ? `${i.quantity} ` : ''}${i.name}`));
+  const infos = [S.formatMinutes(recipe.totalMinutes), (DIFFICULTY_LABEL[recipe.difficulty] ?? '').toLowerCase(), `pour ${S.plural(servings, 'portion')}`];
+  if (recipe.kcal > 0) infos.push(`environ ${recipe.kcal} kcal par portion`);
+  lines.push('', infos.join(', '));
+  lines.push('', 'Ingrédients :', ...recipe.ingredients.map((i) => {
+    const quantity = S.scaleIngredient(i, factor);
+    return `- ${quantity ? `${quantity} ` : ''}${i.name}`;
+  }));
   lines.push('', 'Préparation :', ...recipe.steps.map((s, n) => `${n + 1}. ${s}`));
   if (recipe.storageTips) lines.push('', `Conservation : ${recipe.storageTips}`);
   return lines.join('\n');
 }
 
 function openRecipe(id) {
+  let servings = null; // nombre de portions affiché (null = celui de la recette)
+  const baseServings = (recipe) => Math.max(1, recipe.servings || 2);
+  const shownServings = (recipe) => servings ?? baseServings(recipe);
+  const factorFor = (recipe) => shownServings(recipe) / baseServings(recipe);
+
   const sheet = openSheet({
     tall: true,
     render,
     onData: () => sheet.update(),
     actions: {
       favorite: () => store.toggleFavorite(id),
+      'portions-minus': () => {
+        const recipe = findRecipe();
+        if (!recipe) return;
+        servings = Math.max(1, shownServings(recipe) - 1);
+        sheet.update();
+      },
+      'portions-plus': () => {
+        const recipe = findRecipe();
+        if (!recipe) return;
+        servings = Math.min(24, shownServings(recipe) + 1);
+        sheet.update();
+      },
       'add-missing': () => {
         const recipe = findRecipe();
         if (!recipe) return;
-        const added = store.addMissingIngredients(recipe);
+        const added = store.addMissingIngredients(recipe, factorFor(recipe));
         toast(added ? `${S.plural(added, 'ingrédient')} ajouté${added > 1 ? 's' : ''} aux courses` : 'Déjà dans la liste de courses');
       },
       cooked: () => {
@@ -885,13 +1194,14 @@ function openRecipe(id) {
         if (!recipe) return;
         const used = store.recipeAvailability(recipe).inFridge;
         if (!used.length) return;
-        if (!window.confirm(`Retirer du frigo : ${used.map((p) => p.name).join(', ')} ?`)) return;
-        const removed = store.removeProducts(used.map((p) => p.id));
-        toast(`${S.plural(removed.length, 'produit')} retiré${removed.length > 1 ? 's' : ''} du frigo`, 'Annuler', () => store.restoreProducts(removed));
+        const list = used.map((p) => ((p.count ?? 1) > 1 ? `${p.name} (1 sur ${p.count})` : p.name)).join(', ');
+        if (!window.confirm(`Retirer une unité du frigo : ${list} ?`)) return;
+        const { before } = store.consumeOne(used.map((p) => p.id));
+        toast(`${S.plural(before.length, 'produit')} mis à jour dans le frigo`, 'Annuler', () => store.restoreProducts(before));
       },
       share: () => {
         const recipe = findRecipe();
-        if (recipe) shareText(recipeShareText(recipe), recipe.title);
+        if (recipe) shareText(recipeShareText(recipe, shownServings(recipe)), recipe.title);
       },
       delete: () => {
         if (!window.confirm('Supprimer cette recette sur les deux iPhone ?')) return;
@@ -930,13 +1240,24 @@ function openRecipe(id) {
           <div class="facts">
             <span>${I.clock}${S.formatMinutes(recipe.totalMinutes)}${prep}</span>
             <span>${I.gauge}${DIFFICULTY_LABEL[recipe.difficulty] ?? recipe.difficulty}</span>
-            <span>${I.people}${S.plural(recipe.servings, 'portion')}</span>
+            ${S.DIET_LABEL[recipe.diet] ? html`<span class="diet">${I.leaf}${S.DIET_LABEL[recipe.diet]}</span>` : ''}
           </div>
+          <p class="kcal">${recipe.kcal > 0
+            ? html`${I.flame}≈ ${recipe.kcal} kcal par portion <small>(estimation)</small>`
+            : html`<small>Calories non estimées (recette créée avant cette fonction).</small>`}</p>
         </div>
 
         <section class="group">
           <h2>Ingrédients</h2>
-          ${availability.rows.map(ingredientRow)}
+          <div class="field"><span>Portions</span>
+            <div class="stepper">
+              <button data-action="portions-minus" aria-label="Une portion de moins" ${shownServings(recipe) <= 1 ? raw('disabled') : ''}>−</button>
+              <output aria-live="polite">${shownServings(recipe)}</output>
+              <button data-action="portions-plus" aria-label="Une portion de plus">+</button>
+            </div>
+          </div>
+          ${shownServings(recipe) !== baseServings(recipe) ? html`<p class="hint inset">Quantités recalculées (recette prévue pour ${baseServings(recipe)}). Les temps de cuisson restent indicatifs.</p>` : ''}
+          ${availability.rows.map((row) => ingredientRow(row, factorFor(recipe)))}
           ${missing.length ? html`<button class="row-button" data-action="add-missing">${I.cart}${missing.length > 1 ? `Ajouter les ${missing.length} ingrédients qui manquent aux courses` : "Ajouter l'ingrédient qui manque aux courses"}</button>` : ''}
         </section>
 
@@ -956,7 +1277,7 @@ function openRecipe(id) {
           <button class="row-button" data-action="share">${I.share}Partager la recette</button>
           <button class="row-button danger" data-action="delete">${I.trash}Supprimer la recette</button>
         </section>
-        ${used.length ? html`<p class="hint">« J'ai cuisiné » retire du frigo : ${used.map((p) => p.name).join(', ')}.</p>` : ''}
+        ${used.length ? html`<p class="hint">« J'ai cuisiné » retire une unité de : ${used.map((p) => p.name).join(', ')}.</p>` : ''}
       </div>`;
   }
 }
@@ -967,7 +1288,7 @@ const VIA_LABEL = {
   nom: 'Au frigo (produit similaire)'
 };
 
-function ingredientRow({ ingredient, product, via, inShopping }) {
+function ingredientRow({ ingredient, product, via, inShopping }, factor = 1) {
   const source = SOURCE[ingredient.source] ? ingredient.source : 'a_acheter';
   let where;
   if (product) where = VIA_LABEL[via];
@@ -975,7 +1296,7 @@ function ingredientRow({ ingredient, product, via, inShopping }) {
   else if (inShopping) where = 'Sur la liste de courses';
   else if (ingredient.productId) where = 'Plus au frigo';
   else where = 'À acheter';
-  const detail = [ingredient.quantity, where].filter(Boolean).join(', ');
+  const detail = [S.scaleIngredient(ingredient, factor), where].filter(Boolean).join(', ');
   const iconSource = product ? 'stock' : (source === 'placard' ? 'placard' : (inShopping ? 'courses' : 'a_acheter'));
   const productNote = product && via !== 'origine' ? html`<small class="matched">${product.name}</small>` : '';
   return html`
@@ -996,9 +1317,11 @@ const shoppingView = {
       <header class="top"><div><h1>Courses</h1><p class="sync" id="sync-line"></p></div>
         <button class="link" data-action="clear-checked" id="clear-checked" hidden>Vider le panier</button></header>
       <form class="add-item" id="add-item">
-        <input id="new-item" placeholder="Ajouter un article" autocomplete="off" enterkeyhint="done" aria-label="Nouvel article">
+        <input id="new-item" placeholder="Article à acheter" autocomplete="off" enterkeyhint="done" aria-label="Article à acheter">
+        <input id="new-qty" class="qty" placeholder="Qté" autocomplete="off" enterkeyhint="done" aria-label="Quantité à acheter (facultatif, ex. 2 kg)">
         <button type="submit" aria-label="Ajouter">${I.plus}</button>
       </form>
+      <p class="hint add-hint">Quantité facultative : « 2 kg », « 3 », « 2 paquets »… Touchez un article pour la modifier.</p>
       <div id="shopping-list"></div>`;
   },
   mounted() {
@@ -1028,14 +1351,77 @@ const shoppingView = {
 };
 
 function shoppingRow(item) {
-  const detail = [item.quantity, item.addedBy ? `par ${item.addedBy}` : ''].filter(Boolean).join(', ');
   return html`
     <div class="shop-item ${item.checked ? 'checked' : ''}">
-      <button class="tick" data-action="toggle-item" data-id="${item.id}" aria-pressed="${item.checked}" aria-label="${item.name}"><span>${I.check}</span></button>
-      <button class="shop-text" data-action="toggle-item" data-id="${item.id}" tabindex="-1"><span>${item.name}</span>${detail ? html`<small>${detail}</small>` : ''}</button>
-      <button class="icon-btn" data-action="item-to-fridge" data-id="${item.id}" aria-label="Ranger ${item.name} au frigo">${I.fridge}</button>
-      <button class="icon-btn" data-action="delete-item" data-id="${item.id}" aria-label="Supprimer ${item.name}">${I.x}</button>
+      <button class="tick" data-action="toggle-item" data-id="${item.id}" aria-pressed="${item.checked}" aria-label="${item.checked ? 'Décocher' : 'Cocher'} ${item.name}"><span>${I.check}</span></button>
+      <button class="shop-text" data-action="edit-item" data-id="${item.id}" aria-label="Modifier ${item.name}${item.quantity ? `, ${item.quantity}` : ''}">
+        <span>${item.name}</span>${item.addedBy ? html`<small>par ${item.addedBy}</small>` : ''}
+      </button>
+      ${item.quantity ? html`<button class="qty-pill" data-action="edit-item" data-id="${item.id}" tabindex="-1">${item.quantity}</button>` : ''}
+      ${item.checked
+        ? html`<button class="icon-btn" data-action="item-to-fridge" data-id="${item.id}" aria-label="Ranger ${item.name} au frigo">${I.fridge}</button>`
+        : html`<button class="icon-btn" data-action="delete-item" data-id="${item.id}" aria-label="Supprimer ${item.name}">${I.x}</button>`}
     </div>`;
+}
+
+/** Ranger un article acheté : la fiche produit s'ouvre avec le nom, le nombre et le poids. */
+function moveItemToFridge(item) {
+  const { count, quantity } = S.splitCount(item.quantity);
+  openEditor({ draft: { name: item.name, quantity, count }, shoppingItemId: item.id });
+}
+
+/** Fiche d'un article de courses : nom et quantité modifiables. */
+function openShoppingItem(id) {
+  const item = state.shopping.find((i) => i.id === id);
+  if (!item) return;
+  const draft = { name: item.name, quantity: item.quantity };
+  const sheet = openSheet({
+    render: () => html`
+      <header class="sheet-head">
+        <button class="link" data-action="close">Annuler</button>
+        <h2>Article</h2>
+        <button class="link strong" data-action="save">OK</button>
+      </header>
+      <div class="sheet-body">
+        <section class="group">
+          <label class="field"><span>Article</span><input name="name" value="${draft.name}" autocomplete="off"></label>
+          <label class="field"><span>Quantité</span><input name="quantity" value="${draft.quantity}" placeholder="2 kg, 3, 2 paquets…" autocomplete="off" enterkeyhint="done"></label>
+        </section>
+        <div class="quick">
+          ${['1', '2', '3', '4', '6'].map((n) => html`<button data-action="set-qty" data-value="${n}">${n}</button>`)}
+          <button data-action="set-qty" data-value="">Aucune</button>
+        </div>
+        <section class="group">
+          <button class="row-button" data-action="to-fridge">${I.fridge}Acheté : ranger au frigo</button>
+          <button class="row-button danger" data-action="delete">${I.trash}Supprimer de la liste</button>
+        </section>
+      </div>`,
+    actions: {
+      save: () => {
+        if (!draft.name.trim()) return;
+        store.updateShoppingItem(id, draft);
+        sheet.close();
+      },
+      'set-qty': (el) => {
+        draft.quantity = el.dataset.value;
+        sheet.update();
+      },
+      'to-fridge': () => {
+        store.updateShoppingItem(id, draft);
+        sheet.close();
+        moveItemToFridge({ ...item, ...draft });
+      },
+      delete: () => {
+        store.deleteShoppingItems([id]);
+        sheet.close();
+        toast(`${item.name} : supprimé`, 'Annuler', () => store.addShoppingItem(item.name, item.quantity));
+      }
+    },
+    onInput: (event) => {
+      if (event.target.name === 'name') draft.name = event.target.value;
+      if (event.target.name === 'quantity') draft.quantity = event.target.value;
+    }
+  });
 }
 
 // ===========================================================================
@@ -1079,6 +1465,17 @@ const settingsView = {
       </section>
       <p class="hint">Sert à générer les recettes et à reconnaître un produit en photo. Créez une clé sur console.anthropic.com (payée à l'usage : quelques centimes par génération). Elle reste sur cet iPhone.</p>
 
+      <section class="group">
+        <h2>Recettes</h2>
+        <div class="field"><span class="label-stack">Recette légère<small>Filtre « Léger » de l'écran Recettes</small></span>
+          <div class="stepper">
+            <button data-action="kcal-minus" aria-label="50 kcal de moins">−</button>
+            <output id="kcal-max">${s.lightMaxKcal || 500} kcal max</output>
+            <button data-action="kcal-plus" aria-label="50 kcal de plus">+</button>
+          </div>
+        </div>
+      </section>
+
       <section class="group"><h2>Foyer partagé</h2><div id="household"></div></section>
 
       <section class="group">
@@ -1100,6 +1497,8 @@ const settingsView = {
     const s = state.settings;
     const days = document.getElementById('alert-days');
     if (days) days.textContent = alertText(s.alertDays);
+    const kcal = document.getElementById('kcal-max');
+    if (kcal) kcal.textContent = `${s.lightMaxKcal || 500} kcal max`;
     setHTML('#badge-row', badgeRow());
     const time = state.lastSync ? state.lastSync.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '—';
     setHTML('#sync-details', html`
@@ -1404,6 +1803,19 @@ const ACTIONS = {
     rerenderKeepScroll();
   },
   generate: () => generateRecipes(),
+  'servings-minus': () => {
+    store.updateSettings({ servings: Math.max(1, (state.settings.servings || 2) - 1) });
+    rerenderKeepScroll();
+  },
+  'servings-plus': () => {
+    store.updateSettings({ servings: Math.min(12, (state.settings.servings || 2) + 1) });
+    rerenderKeepScroll();
+  },
+  'set-diet': (el) => {
+    ui.filters.diet = el.dataset.value;
+    ui.recipeNote = null;
+    rerenderKeepScroll();
+  },
   'open-recipe': (el) => openRecipe(el.dataset.id),
 
   // Courses
@@ -1416,13 +1828,16 @@ const ACTIONS = {
   },
   'item-to-fridge': (el) => {
     const item = state.shopping.find((i) => i.id === el.dataset.id);
-    if (item) openEditor({ draft: { name: item.name, quantity: item.quantity }, shoppingItemId: item.id });
+    if (item) moveItemToFridge(item);
   },
+  'edit-item': (el) => openShoppingItem(el.dataset.id),
   'clear-checked': () => store.clearCheckedShopping(),
 
   // Réglages
   'alert-minus': () => store.updateSettings({ alertDays: Math.max(0, state.settings.alertDays - 1) }),
   'alert-plus': () => store.updateSettings({ alertDays: Math.min(7, state.settings.alertDays + 1) }),
+  'kcal-minus': () => store.updateSettings({ lightMaxKcal: Math.max(250, (state.settings.lightMaxKcal || 500) - 50) }),
+  'kcal-plus': () => store.updateSettings({ lightMaxKcal: Math.min(1000, (state.settings.lightMaxKcal || 500) + 50) }),
   'save-key': () => {
     const key = document.getElementById('key-input')?.value.trim() ?? '';
     if (!key.startsWith('sk-')) {
@@ -1497,8 +1912,9 @@ function wireEvents() {
     const t = event.target;
     if (t.dataset.setting === 'userName') store.updateSettings({ userName: t.value.trim() });
     else if (t.id === 'model') store.updateSettings({ model: t.value });
-    else if (t.id === 'batch-toggle') {
-      ui.filters.batchOnly = t.checked;
+    else if (t.id === 'batch-toggle' || t.id === 'light-toggle') {
+      if (t.id === 'batch-toggle') ui.filters.batchOnly = t.checked;
+      else ui.filters.light = t.checked;
       ui.recipeNote = null;
       rerenderKeepScroll();
     }
@@ -1507,12 +1923,24 @@ function wireEvents() {
   screen.addEventListener('submit', (event) => {
     if (event.target.id !== 'add-item') return;
     event.preventDefault();
-    const input = document.getElementById('new-item');
-    const value = input.value.trim();
-    if (!value) return;
-    if (store.addShoppingItem(value)) input.value = '';
-    else toast('Déjà dans la liste');
-    input.focus();
+    const nameInput = document.getElementById('new-item');
+    const qtyInput = document.getElementById('new-qty');
+    const name = nameInput.value.trim();
+    const qty = qtyInput.value.trim();
+    if (!name) {
+      if (qty) toast("Indiquez l'article à acheter");
+      nameInput.focus();
+      return;
+    }
+    const result = store.addShoppingItem(name, qty, { updateQuantity: true });
+    if (result) {
+      nameInput.value = '';
+      qtyInput.value = '';
+      if (result === 'updated') toast(`${name} : quantité mise à jour (${qty})`);
+    } else {
+      toast('Déjà dans la liste');
+    }
+    nameInput.focus();
   });
 
   document.querySelector('.tabbar').addEventListener('click', (event) => {
