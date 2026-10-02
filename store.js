@@ -1,4 +1,4 @@
-// Frigo partagé — état de l'app et synchronisation Firebase (Firestore).
+// Kookia — état de l'app et synchronisation Firebase (Firestore).
 // Données partagées : foyers/{code}/produits, /courses, /recettes.
 // Réglages propres à chaque iPhone : localStorage.
 
@@ -11,7 +11,8 @@ import {
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import {
   statusOf, daysUntil, hasDate, resolveIngredient, matchesFilters, scaleIngredient, maxPurchases,
-  sanitizeCount, splitItemName, toShoppingEntry
+  sanitizeCount, splitItemName, toShoppingEntry, stockStatus, nameMatchScore,
+  dateKindOf, freezerLimit, estimateFreshDays, isoInDays, toISODate, locationOf
 } from './services.js';
 
 // ---------------------------------------------------------------------------
@@ -98,7 +99,18 @@ export function sortedProducts() {
 }
 
 export function productStatus(product) {
-  return statusOf(product.expiry, state.settings.alertDays);
+  return stockStatus(product, state.settings.alertDays);
+}
+
+/** Produits par lieu de rangement ('' = tous). */
+export function productsIn(location = '') {
+  return sortedProducts().filter((p) => !location || (p.location || 'frigo') === location);
+}
+
+/** Produits en stock qui ressemblent à un article de courses (anti-achat en double). */
+export function stockMatches(name) {
+  const base = splitItemName(name).base;
+  return state.products.filter((p) => nameMatchScore(base, p.name) > 0);
 }
 
 /** Périmés + à consommer vite (hors produits dont la date est à compléter). */
@@ -389,6 +401,9 @@ function toProduct(id, d) {
     category: d.category ?? 'autre',
     quantity: d.quantity ?? '',
     count: Number(d.count) >= 1 ? Math.round(Number(d.count)) : 1, // nombre d'unités (anciens produits : 1)
+    location: d.location || 'frigo',   // anciens produits : au frigo
+    dateKind: d.dateKind || 'dlc',     // anciens produits : date limite imprimée
+    frozenAt: d.frozenAt ?? '',
     barcode: d.barcode ?? '',
     addedBy: d.addedBy ?? '',
     createdAt: d.createdAt ?? 0,
@@ -447,6 +462,9 @@ export function saveProduct(product) {
     category: product.category || 'autre',
     quantity: (product.quantity ?? '').trim(),
     count: Math.max(1, Math.round(Number(product.count) || 1)),
+    location: product.location || 'frigo',
+    dateKind: dateKindOf(product),
+    frozenAt: product.frozenAt || '',
     barcode: product.barcode || '',
     addedBy: product.addedBy || state.settings.userName,
     createdAt: product.createdAt || Date.now(),
@@ -558,10 +576,29 @@ export function addReceiptProducts(items, shoppingIdsToRemove = []) {
   if (!canWrite() || !items.length) return 0;
   const batch = writeBatch(db);
   const now = Date.now();
+  const today = toISODate(new Date());
   items.forEach((item, index) => {
+    const location = locationOf(item.location).id;
+    const produce = item.category === 'fruits_legumes' || location === 'fruits';
+    let dateKind = 'dlc';
+    let expiry = ''; // frigo : date à compléter (elle est imprimée sur l'emballage)
+    let frozenAt = '';
+    if (location === 'congelateur') {
+      dateKind = 'congele';
+      frozenAt = today;
+      expiry = freezerLimit(item.category, today);
+    } else if (location === 'placard') {
+      dateKind = 'aucune';
+    } else if (produce) {
+      dateKind = 'estimee';
+      expiry = isoInDays(estimateFreshDays(item.name, location));
+    }
     batch.set(ref('produits', crypto.randomUUID()), {
       name: item.name.trim(),
-      expiry: '',
+      expiry,
+      location,
+      dateKind,
+      frozenAt,
       category: item.category || 'autre',
       quantity: (item.quantity ?? '').trim(),
       count: Math.max(1, Math.round(Number(item.count) || 1)),
@@ -709,5 +746,5 @@ export function errorMessage(error) {
 
 // Utilisé par l'interface pour la pastille de l'icône.
 export function badgeCount() {
-  return state.products.filter((p) => hasDate(p.expiry) && daysUntil(p.expiry) <= state.settings.alertDays).length;
+  return urgentProducts().length;
 }

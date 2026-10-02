@@ -1,13 +1,15 @@
-# Frigo partagé (application web)
+# Kookia
 
-Application pour deux personnes, installée sur l'écran d'accueil de chaque iPhone depuis Safari. **Elle n'expire jamais** et ne demande ni Mac ni compte développeur Apple.
+Le stock de nourriture de la maison, partagé à deux : **frigo, congélateur, placard, fruits et légumes**. Application installée sur l'écran d'accueil de chaque iPhone depuis Safari. **Elle n'expire jamais** et ne demande ni Mac ni compte développeur Apple.
 
-- **Ajout de produits** : scan du code-barres (base Open Food Facts), photo analysée par Claude, **ticket de caisse** (toutes les courses d'un coup), lecture de la date sur l'emballage, ou saisie manuelle.
+- **Tout le stock** : chaque produit a un lieu (Frigo, Congélateur, Placard, Fruits & légumes) et une date adaptée. Date limite (DLC) ou « de préférence » (DDM) imprimée, date estimée pour les fruits et légumes, durée conseillée pour ce qu'on congèle, et simple ancienneté (« au placard depuis 8 mois ») pour les produits secs sans date.
+- **Ajout de produits** : scan du code-barres (base Open Food Facts), photo analysée par Claude, **ticket de caisse** (toutes les courses d'un coup, chaque produit rangé à sa place), **grille de fruits et légumes** sans code-barres, lecture de la date sur l'emballage, ou saisie manuelle.
+- **Anti-oubli, anti-achat en double** : bouton *Congeler* pour sauver un produit qui va périmer, section « Oubliés depuis longtemps », et avertissement « déjà en stock » dans la liste de courses.
 - **Alertes** : les produits à consommer vite sont mis en avant à chaque ouverture, avec une pastille sur l'icône (voir les limites plus bas).
-- **Recettes** : l'app montre d'abord vos recettes déjà enregistrées réalisables avec le frigo actuel (gratuit). Sinon, Claude en propose 5 nouvelles qui utilisent d'abord les produits qui vont périmer, complétés par le frigo et la liste de courses. Filtres : nombre de personnes, végétarien ou vegan, **origine** (cuisines du monde, envie libre comme « nouilles » ou « couscous »), léger, difficulté, temps total, batch cooking. Calories estimées par portion, quantités recalculables selon le nombre de portions.
+- **Recettes** : l'app montre d'abord vos recettes déjà enregistrées réalisables avec le stock actuel (gratuit). Sinon, Claude en propose 5 nouvelles qui utilisent d'abord les produits qui vont périmer et ceux oubliés depuis longtemps, complétés par le reste du stock et la liste de courses. Filtres : nombre de personnes, végétarien ou vegan, **origine** (cuisines du monde, envie libre comme « nouilles » ou « couscous »), léger, difficulté, temps total, batch cooking. Calories estimées par portion, quantités recalculables selon le nombre de portions.
 - **Recettes toujours à jour** : un produit racheté est reconnu dans les anciennes recettes grâce à son code-barres (ou, à défaut, à son nom).
 - **Produits consommés** : le rond à gauche de chaque produit, la fiche du produit, ou « J'ai cuisiné cette recette ».
-- **Partage en temps réel** entre les deux iPhone (frigo, liste de courses et recettes), via une base Firebase gratuite. Fonctionne aussi hors ligne.
+- **Partage en temps réel** entre les deux iPhone (stock, liste de courses et recettes), via une base Firebase gratuite. Fonctionne aussi hors ligne.
 
 Tout est gratuit, sauf les fonctions Claude (facultatives, quelques centimes par usage).
 
@@ -39,7 +41,7 @@ L'offre gratuite « Spark » suffit largement et ne demande aucune carte bancair
 1. Créez un compte sur [github.com](https://github.com) si besoin.
 2. En haut à droite : **+** → **New repository**. Nom : `frigo`. Laissez **Public** (obligatoire pour GitHub Pages gratuit). Cliquez **Create repository**.
 3. Sur la page suivante, cliquez le lien **uploading an existing file**.
-4. Décompressez le zip, ouvrez le dossier `frigo-partage-web` et **glissez tous les fichiers qu'il contient** (pas le dossier lui-même) dans la zone. Cliquez **Commit changes**.
+4. Décompressez le zip, ouvrez le dossier `kookia` et **glissez tous les fichiers qu'il contient** (pas le dossier lui-même) dans la zone. Cliquez **Commit changes**.
 5. Onglet **Settings** → **Pages** (menu de gauche) → *Branch* : `main`, dossier `/ (root)` → **Save**.
 6. Patientez une à deux minutes. L'adresse de l'app apparaît en haut de cette page, du type `https://votre-pseudo.github.io/frigo/`.
 
@@ -51,7 +53,7 @@ Aucun secret n'est publié : la configuration Firebase n'est saisie que dans l'a
 
 1. Ouvrez l'adresse de l'étape 2 dans **Safari**.
 2. Touchez **Partager** (carré avec une flèche) → **Sur l'écran d'accueil** → **Ajouter**.
-3. Ouvrez **Frigo** depuis l'écran d'accueil (pas depuis Safari : l'app installée garde ses propres données).
+3. Ouvrez **Kookia** depuis l'écran d'accueil (pas depuis Safari : l'app installée garde ses propres données).
 4. Collez le bloc `firebaseConfig` copié à l'étape 1.3 → **Continuer**.
 5. Saisissez votre prénom → **Créer un foyer**.
 6. Touchez **Envoyer** pour transmettre l'invitation à l'autre personne (Messages, WhatsApp, e-mail…), puis **Commencer**.
@@ -85,16 +87,39 @@ Le nombre de jours de prévenance (0 à 7, 2 par défaut) se règle dans **Régl
 
 ## Utilisation au quotidien
 
-- **Ajouter** : bouton **+** → *Scanner un code-barres*, *Prendre le produit en photo* ou *Saisir à la main*. Dans la fiche, **Lire la date** photographie la date de près. **Vérifiez toujours la date proposée.**
+- **Stock** : l'onglet affiche tout ; les boutons *Frigo*, *Congélateur*, *Placard*, *Fruits & légumes* filtrent par lieu (avec le nombre de produits). Sections : *Date à compléter*, *Périmés* (date limite dépassée uniquement), *À consommer vite*, *Oubliés depuis longtemps* (au placard depuis plus de 6 mois), *En stock*.
+- **Ajouter** : bouton **+** → *Scanner un code-barres*, *Prendre le produit en photo*, *Fruits et légumes*, *Scanner un ticket de caisse* ou *Saisir à la main*. Dans la fiche, choisissez le **rangement**, puis le **type de date** proposé pour ce lieu :
+  - *Frigo* : date limite (DLC), « de préférence » (DDM) ou estimée ;
+  - *Congélateur* : « congelé le … » (durée conseillée selon la catégorie : 6 mois pour la viande, 4 pour le poisson, 12 pour les légumes…) ou date imprimée sur l'emballage ;
+  - *Placard* : sans date (l'app suit l'ancienneté) ou date « de préférence » imprimée ;
+  - *Fruits & légumes* : date estimée selon le produit (bananes ≈ 5 jours, pommes de terre ≈ 45 jours…), modifiable.
+
+  **Lire la date** photographie la date de près. **Vérifiez toujours la date proposée.** Un surgelé scanné va directement au congélateur, un paquet de riz au placard.
+- **Fruits et légumes sans code-barres** : **+** → *Fruits et légumes*. Touchez ce que vous avez acheté (plusieurs fois pour en ajouter plusieurs), ou tapez un nom absent de la liste, puis **Ajouter**. Chaque produit va à sa place habituelle avec une date estimée.
+- **Congeler** : dans la fiche d'un produit du frigo qui va périmer, *Congeler* le passe au congélateur avec une durée conseillée.
 - **Nombre et poids** : dans la fiche, **Nombre** (boutons − et +) indique combien d'unités vous avez, **Poids ou contenance** la taille de chacune. Deux sachets de 2 kg de pommes de terre : nombre 2, poids « 2 kg », affiché « 2 × 2 kg » avec une pastille ×2. Un pack scanné « 4 x 125 g » est compris comme 4 pots de 125 g.
-- **Scanner un produit déjà au frigo** : l'app le signale et propose de l'ajouter au produit existant (même date de péremption) plutôt que d'en créer un second.
-- **Ticket de caisse** : **+** → *Scanner un ticket de caisse*. Photographiez le ticket (plusieurs photos de haut en bas s'il est long, ou une capture de commande en ligne) → **Lire le ticket**. Vérifiez la liste : corrigez un nom, le nombre ou le poids, décochez ce qui ne va pas au frigo, puis **Ajouter**. Les produits arrivent dans la section **Date à compléter** (compteur « ? ») : touchez-les pour indiquer la date, ou « Lire la date » pour la photographier. Les articles de la liste de courses retrouvés sur le ticket en sont retirés. Nécessite une clé Claude.
-- **Consommé** : touchez le rond à gauche d'un produit. S'il y en a plusieurs, une seule unité est retirée (« il en reste 1 ») ; le produit disparaît à la dernière. Un bouton **Annuler** apparaît quelques secondes. Pour tout retirer d'un coup : fiche du produit → *Consommé : retirer du frigo*.
+- **Scanner un produit déjà en stock** : l'app le signale et propose de l'ajouter au produit existant (même date de péremption) plutôt que d'en créer un second.
+- **Ticket de caisse** : **+** → *Scanner un ticket de caisse*. Photographiez le ticket (plusieurs photos de haut en bas s'il est long, ou une capture de commande en ligne) → **Lire le ticket**. Vérifiez la liste : corrigez un nom, le nombre, le poids ou le **lieu** proposé, décochez ce qui ne va pas en stock, puis **Ajouter**. Placard, congélateur, fruits et légumes n'ont pas besoin de date ; les produits du frigo arrivent dans la section **Date à compléter** (compteur « ? ») : touchez-les pour indiquer la date, ou « Lire la date » pour la photographier. Les articles de la liste de courses retrouvés sur le ticket en sont retirés. Nécessite une clé Claude.
+- **Consommé** : touchez le rond à gauche d'un produit. S'il y en a plusieurs, une seule unité est retirée (« il en reste 1 ») ; le produit disparaît à la dernière. Un bouton **Annuler** apparaît quelques secondes. Pour tout retirer d'un coup : fiche du produit → *Consommé : retirer du stock*.
 - **Racheter** : dans la fiche d'un produit, *Ajouter à la liste de courses*.
-- **Recettes** : choisissez **pour combien de personnes** (choix mémorisé), et si besoin **Végétarien**, **Vegan** ou **Léger** (500 kcal maximum par portion, seuil réglable dans Réglages → Recettes). **Origine** ouvre un sélecteur : cochez une ou plusieurs cuisines (italienne, japonaise, maghrébine…, ou *Tour du monde* pour varier), et/ou décrivez votre envie dans « Envie de… ». Avec une origine ou une envie, Claude peut prévoir jusqu'à 6 ingrédients à acheter par recette pour rester fidèle à l'originale (2 sinon). Les produits à consommer vite sont présélectionnés (*Choisir les produits* pour changer). La section **Déjà dans vos recettes** liste les recettes enregistrées réalisables avec le frigo actuel (au plus deux ingrédients à se procurer), celles qui utilisent les produits à consommer vite en premier. Si aucune ne convient, **Proposer 5 nouvelles recettes**. Dans une recette : ajouter aux courses ce qui manque, favori (étoile), partager, **J'ai cuisiné cette recette** (retire une unité de chaque produit utilisé).
+- **Recettes** : choisissez **pour combien de personnes** (choix mémorisé), et si besoin **Végétarien**, **Vegan** ou **Léger** (500 kcal maximum par portion, seuil réglable dans Réglages → Recettes). **Origine** ouvre un sélecteur : cochez une ou plusieurs cuisines (italienne, japonaise, maghrébine…, ou *Tour du monde* pour varier), et/ou décrivez votre envie dans « Envie de… ». Avec une origine ou une envie, Claude peut prévoir jusqu'à 6 ingrédients à acheter par recette pour rester fidèle à l'originale (2 sinon). Les produits à consommer vite sont présélectionnés (*Choisir les produits* pour changer). La section **Déjà dans vos recettes** liste les recettes enregistrées réalisables avec le stock actuel (au plus deux ingrédients à se procurer), celles qui utilisent les produits à consommer vite en premier. Si aucune ne convient, **Proposer 5 nouvelles recettes**. Dans une recette : ajouter aux courses ce qui manque, favori (étoile), partager, **J'ai cuisiné cette recette** (retire une unité de chaque produit utilisé).
 - **Dans une recette**, les boutons **Portions** − et + recalculent les quantités (les temps de cuisson restent indicatifs) ; « ajouter aux courses » et « partager » suivent ce nombre. Les calories sont une **estimation** de Claude par portion.
-- Chaque ingrédient indique où il se trouve : *Au frigo* (le produit d'origine), *Au frigo (même code-barres)* (produit racheté), *Au frigo (produit similaire)* (retrouvé par son nom, à vérifier), *Sur la liste de courses*, *Placard* ou *À acheter*. Pour profiter du rapprochement par code-barres, ajoutez vos produits en les scannant.
-- **Courses** : tapez l'article et, si besoin, le **nombre** à acheter dans « Qté » (chiffres uniquement). Pour préciser un poids, écrivez-le avec l'article : « Farine 1 kg ». Les ingrédients ajoutés depuis une recette suivent la même règle (« Pâtes (400 g) »). Touchez le rond pour cocher, touchez le nom pour modifier. Ajouter un article déjà présent avec un nouveau nombre met simplement sa quantité à jour. Une fois acheté, l'icône frigo le range au frigo : « Farine 1 kg », nombre 2, devient nombre 2 et poids « 1 kg ».
+- Chaque ingrédient indique où il se trouve : *Au frigo*, *Au placard*, *Au congélateur*… (le produit d'origine), avec *(même code-barres)* pour un produit racheté ou *(produit similaire)* s'il est retrouvé par son nom (à vérifier), sinon *Sur la liste de courses* ou *À acheter*. Pour profiter du rapprochement par code-barres, ajoutez vos produits en les scannant.
+- **Courses** : tapez l'article et, si besoin, le **nombre** à acheter dans « Qté » (chiffres uniquement). Pour préciser un poids, écrivez-le avec l'article : « Farine 1 kg ». Les ingrédients ajoutés depuis une recette suivent la même règle (« Pâtes (400 g) »). Touchez le rond pour cocher, touchez le nom pour modifier. Ajouter un article déjà présent avec un nouveau nombre met simplement sa quantité à jour. Si l'article est déjà en stock, l'app l'indique (« En stock : 1 au placard ») pour éviter d'acheter en double. Une fois acheté, l'icône bocal le range dans le stock : « Farine 1 kg », nombre 2, devient nombre 2 et poids « 1 kg ».
+
+## Passer de « Frigo partagé » à Kookia
+
+Après avoir mis les nouveaux fichiers sur GitHub (section suivante), l'app ouverte affiche déjà Kookia : vos produits passent automatiquement dans « Frigo », rien n'est perdu.
+
+L'iPhone garde cependant **l'ancien nom et l'ancienne icône** sur l'écran d'accueil. Pour les remplacer (facultatif), sur chaque iPhone :
+
+1. Dans l'app : **Réglages → Foyer partagé → Copier le code d'invitation**, et gardez-le dans Notes.
+2. Vérifiez que vous avez votre **clé Claude** quelque part. Elle ne peut plus être affichée en entier ; sinon, créez-en une nouvelle sur console.anthropic.com (une minute).
+3. Supprimez l'ancienne icône de l'écran d'accueil (appui long → *Supprimer l'app*).
+4. Ouvrez la même adresse dans Safari → **Partager → Sur l'écran d'accueil**, puis ouvrez Kookia.
+5. Collez l'invitation, saisissez votre prénom, **Rejoindre le foyer**, puis recollez la clé Claude dans Réglages.
+
+Le stock, les courses et les recettes, partagés dans Firebase, sont retrouvés tels quels. Gardez la **même adresse GitHub** : en changer créerait une app vide.
 
 ## Mettre à jour l'app
 
@@ -112,6 +137,8 @@ Aucune donnée n'est perdue : ni le frigo, ni les recettes, ni la clé Claude.
 - **Synchronisation après une pause** : quand l'app revient au premier plan, elle rétablit sa connexion (« Actualisation… » pendant une seconde). Si l'autre iPhone a fait une modification alors qu'il était hors ligne, elle n'arrive qu'une fois qu'il a retrouvé le réseau et été rouvert.
 - **Lecture de date sans Claude** : l'outil gratuit (téléchargé au premier usage, quelques Mo) est fiable sur les dates bien imprimées, beaucoup moins sur les dates embossées ou au jet d'encre. Avec une clé Claude, c'est Claude qui lit la date, bien plus fiable.
 - **Open Food Facts** : base collaborative, certains produits sont absents ou incomplets.
+- **Dates estimées** : celles des fruits et légumes et des produits congelés sont des repères, pas des dates de péremption. L'app les marque d'un « ≈ » et ne les affiche jamais en « Périmés » : vérifiez l'aspect et l'odeur.
+- **Produits secs** : la section « Oubliés depuis longtemps » se base sur la date d'ajout dans l'app, pas sur la date d'achat réelle des produits déjà présents avant.
 - **Calories** : estimation de Claude, à environ 20 % près. Les recettes créées avant cette fonction n'ont ni calories ni régime : elles sont masquées quand un filtre Végétarien, Vegan, Léger ou une cuisine est choisi (l'« Envie de… », elle, cherche dans le titre et les ingrédients de toutes les recettes).
 - **Ticket de caisse** : pas de date de péremption sur un ticket, ni de code-barres (le rapprochement avec les anciennes recettes se fait alors par le nom). La photo est envoyée à Claude pour être lue (environ 1 à 3 centimes) ; elle peut contenir le nom du magasin et les derniers chiffres de la carte bancaire, et n'est pas conservée dans l'app.
 - **DLC ou DDM** : l'app ne fait pas la différence. Claude a pour consigne de ne jamais utiliser un produit frais (viande, poisson, laitier, traiteur) dont la date est dépassée.

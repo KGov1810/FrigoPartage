@@ -1,7 +1,7 @@
 // Service worker : l'app s'ouvre même sans réseau.
 // Fichiers de l'app : réseau d'abord (toujours la dernière version), cache si hors ligne.
 // Bibliothèques (versions figées) : cache d'abord.
-const VERSION = 'frigo-v6';
+const VERSION = 'kookia-v7';
 const APP_FILES = [
   './', './index.html', './styles.css', './app.js', './ui.js', './store.js', './services.js',
   './config.js', './manifest.json', './icon-180.png', './icon-192.png', './icon-512.png'

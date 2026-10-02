@@ -1,4 +1,4 @@
-// Frigo partagé — services sans interface : dates, lecture de date (OCR),
+// Kookia — services sans interface : dates, lecture de date (OCR),
 // Open Food Facts, Claude, images, scanner de code-barres.
 
 // ---------------------------------------------------------------------------
@@ -226,6 +226,219 @@ function makeDate(year, month, day) {
   const date = new Date(year, month - 1, day);
   if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
   return date;
+}
+
+// ---------------------------------------------------------------------------
+// Lieux de rangement et types de date
+// ---------------------------------------------------------------------------
+
+export const LOCATIONS = [
+  { id: 'frigo', label: 'Frigo', at: 'au frigo' },
+  { id: 'congelateur', label: 'Congélateur', at: 'au congélateur' },
+  { id: 'placard', label: 'Placard', at: 'au placard' },
+  { id: 'fruits', label: 'Fruits & légumes', at: 'avec les fruits et légumes' }
+];
+
+export function locationOf(id) {
+  return LOCATIONS.find((l) => l.id === id) ?? LOCATIONS[0];
+}
+
+/**
+ * Type de date d'un produit :
+ * 'dlc' date limite imprimée (stricte) · 'ddm' « de préférence avant » (souple) ·
+ * 'estimee' estimée par l'app (fruits et légumes) · 'congele' congelé maison (durée conseillée) ·
+ * 'aucune' pas de date : l'app suit l'ancienneté (produits secs).
+ */
+export const DATE_KINDS = {
+  dlc: { label: 'Jusqu\'au (DLC)', field: 'À consommer jusqu\'au' },
+  ddm: { label: 'De préférence (DDM)', field: 'De préférence avant le' },
+  estimee: { label: 'Estimée', field: 'Se garde jusqu\'au (estimé)' },
+  congele: { label: 'Congelé maison', field: 'Congelé le' },
+  aucune: { label: 'Sans date', field: '' }
+};
+
+/** Types proposés selon le lieu (le premier est celui par défaut). */
+export const KINDS_BY_LOCATION = {
+  frigo: ['dlc', 'ddm', 'estimee'],
+  congelateur: ['congele', 'ddm'],
+  placard: ['aucune', 'ddm'],
+  fruits: ['estimee']
+};
+
+export function dateKindOf(product) {
+  return product?.dateKind || 'dlc'; // anciens produits : date limite imprimée
+}
+
+/** Durée conseillée au congélateur, en mois, selon la catégorie. */
+export const FREEZER_MONTHS = {
+  viande: 6, poisson: 4, traiteur: 3, fruits_legumes: 12, boulangerie: 3,
+  laitier: 4, surgele: 6, epicerie: 6, boisson: 6, autre: 6
+};
+
+export function addMonths(date, months) {
+  const target = new Date(date.getFullYear(), date.getMonth() + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  return new Date(target.getFullYear(), target.getMonth(), Math.min(date.getDate(), lastDay));
+}
+
+/** Date limite conseillée d'un produit congelé maison. */
+export function freezerLimit(category, frozenAtISO) {
+  const frozen = parseISODate(frozenAtISO) ?? startOfDay();
+  return toISODate(addMonths(frozen, FREEZER_MONTHS[category] ?? 6));
+}
+
+/** Fruits et légumes courants : où on les range et combien de jours ils se gardent environ. */
+export const PRODUCE = [
+  ['Bananes', '🍌', 'fruits', 5], ['Pommes', '🍎', 'fruits', 14], ['Poires', '🍐', 'fruits', 5],
+  ['Oranges', '🍊', 'fruits', 14], ['Clémentines', '🍊', 'fruits', 10], ['Citrons', '🍋', 'fruits', 21],
+  ['Kiwis', '🥝', 'fruits', 7], ['Avocats', '🥑', 'fruits', 4], ['Mangues', '🥭', 'fruits', 5],
+  ['Ananas', '🍍', 'fruits', 4], ['Melon', '🍈', 'fruits', 5], ['Pastèque', '🍉', 'fruits', 7],
+  ['Pêches', '🍑', 'fruits', 3], ['Tomates', '🍅', 'fruits', 5], ['Pommes de terre', '🥔', 'fruits', 45],
+  ['Patates douces', '🍠', 'fruits', 21], ['Oignons', '🧅', 'fruits', 60], ['Échalotes', '🧅', 'fruits', 60],
+  ['Ail', '🧄', 'fruits', 90], ['Potiron', '🎃', 'fruits', 60], ['Courge butternut', '🎃', 'fruits', 60],
+  ['Salade', '🥬', 'frigo', 4], ['Carottes', '🥕', 'frigo', 21], ['Courgettes', '🥒', 'frigo', 7],
+  ['Concombre', '🥒', 'frigo', 7], ['Poivrons', '🫑', 'frigo', 10], ['Aubergines', '🍆', 'frigo', 7],
+  ['Brocoli', '🥦', 'frigo', 5], ['Chou-fleur', '🥦', 'frigo', 7], ['Chou', '🥬', 'frigo', 30],
+  ['Champignons', '🍄', 'frigo', 5], ['Haricots verts', '🫛', 'frigo', 5], ['Épinards', '🥬', 'frigo', 3],
+  ['Poireaux', '🥬', 'frigo', 14], ['Céleri', '🥬', 'frigo', 14], ['Fenouil', '🌿', 'frigo', 7],
+  ['Radis', '🌱', 'frigo', 7], ['Maïs', '🌽', 'frigo', 3], ['Gingembre', '🫚', 'frigo', 21],
+  ['Piments', '🌶️', 'frigo', 10], ['Herbes fraîches', '🌿', 'frigo', 5], ['Fraises', '🍓', 'frigo', 3],
+  ['Framboises', '🍓', 'frigo', 2], ['Myrtilles', '🫐', 'frigo', 7], ['Raisin', '🍇', 'frigo', 7],
+  ['Cerises', '🍒', 'frigo', 5]
+].map(([name, emoji, place, days]) => ({ name, emoji, place, days }));
+
+/** Fruit ou légume du catalogue correspondant à un nom (« tomates cerises » → Tomates). */
+export function produceFor(name) {
+  let best = null;
+  let bestScore = 0;
+  for (const item of PRODUCE) {
+    const score = nameMatchScore(name, item.name);
+    if (score > bestScore) {
+      best = item;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/** Durée de conservation estimée (jours) d'un produit frais sans date imprimée. */
+export function estimateFreshDays(name, location = 'frigo') {
+  return produceFor(name)?.days ?? (location === 'fruits' ? 7 : 5);
+}
+
+function ageInDays(product, today = new Date()) {
+  const since = product.dateKind === 'congele' && parseISODate(product.frozenAt)
+    ? parseISODate(product.frozenAt)
+    : new Date(product.createdAt || Date.now());
+  return Math.max(0, Math.floor((startOfDay(today) - startOfDay(since)) / DAY));
+}
+
+/** « 3 jours », « 5 mois », « 2 ans ». */
+export function durationText(days) {
+  if (days < 60) return plural(days, 'jour');
+  if (days < 730) return `${Math.round(days / 30.4)} mois`;
+  return plural(Math.floor(days / 365), 'an');
+}
+
+/** 'pending' (date à compléter) | 'expired' | 'soon' | 'old' (oublié depuis longtemps) | 'ok'. */
+export function stockStatus(product, alertDays = 2, today = new Date()) {
+  const kind = dateKindOf(product);
+  if (kind === 'aucune') return ageInDays(product, today) >= 180 ? 'old' : 'ok';
+  if (!hasDate(product.expiry)) return 'pending';
+  const days = daysUntil(product.expiry, today);
+  // Seule une date limite (DLC) dépassée rend un produit « périmé ».
+  if (days < 0) return kind === 'dlc' ? 'expired' : 'soon';
+  const window = kind === 'congele' ? 30 : kind === 'ddm' ? 14 : alertDays;
+  return days <= Math.max(0, window) ? 'soon' : 'ok';
+}
+
+/** Phrase complète, ex. « Congelé le 3 mars, idéalement avant septembre 2027 ». */
+export function stockLabel(product, today = new Date()) {
+  const kind = dateKindOf(product);
+  if (kind === 'aucune') {
+    const age = ageInDays(product, today);
+    return age === 0 ? `Ajouté aujourd'hui ${locationOf(product.location).at}` : `${locationOf(product.location).at.replace(/^./, (c) => c.toUpperCase())} depuis ${durationText(age)}`;
+  }
+  if (!hasDate(product.expiry)) return 'Date à compléter';
+  const days = daysUntil(product.expiry, today);
+  const long = formatDate(product.expiry, { day: 'numeric', month: 'long', year: 'numeric' });
+  switch (kind) {
+    case 'ddm':
+      if (days < 0) return `Date « de préférence » dépassée depuis ${durationText(-days)} : souvent encore bon, à vérifier`;
+      return days <= 30 ? `De préférence dans ${durationText(days)}` : `De préférence avant le ${long}`;
+    case 'estimee':
+      if (days < 0) return 'Date estimée dépassée : à vérifier';
+      return days === 0 ? "À consommer aujourd'hui (estimation)" : `Se garde encore environ ${durationText(days)} (estimation)`;
+    case 'congele': {
+      const frozen = formatDate(product.frozenAt, { day: 'numeric', month: 'long' });
+      if (days < 0) return `Congelé${frozen ? ` le ${frozen}` : ''} : durée conseillée dépassée, à consommer rapidement`;
+      return `Congelé${frozen ? ` le ${frozen}` : ''}, idéalement avant ${formatDate(product.expiry, { month: 'long', year: 'numeric' })}`;
+    }
+    default:
+      return expiryLabel(product.expiry, today);
+  }
+}
+
+/** Version courte pour les listes. */
+export function stockShort(product, today = new Date()) {
+  const kind = dateKindOf(product);
+  if (kind === 'aucune') {
+    const age = ageInDays(product, today);
+    return age === 0 ? "ajouté aujourd'hui" : `depuis ${durationText(age)}`;
+  }
+  if (!hasDate(product.expiry)) return 'date à compléter';
+  const date = formatDate(product.expiry);
+  switch (kind) {
+    case 'ddm': return `de préférence avant le ${date}`;
+    case 'estimee': return `estimé jusqu'au ${date}`;
+    case 'congele': return `congelé le ${formatDate(product.frozenAt) || '?'}`;
+    default: return `jusqu'au ${date}`;
+  }
+}
+
+/** Compteur affiché sur la ligne : { number, label, approx, kind ('age' | 'pending' | statut) }. */
+export function stockCounter(product, alertDays = 2, today = new Date()) {
+  const kind = dateKindOf(product);
+  const status = stockStatus(product, alertDays, today);
+  if (kind === 'aucune') {
+    const age = ageInDays(product, today);
+    return age < 60
+      ? { number: age, label: age > 1 ? 'jours ici' : 'jour ici', approx: false, cls: status === 'old' ? 'old' : 'age' }
+      : { number: Math.round(age / 30.4), label: 'mois ici', approx: false, cls: status === 'old' ? 'old' : 'age' };
+  }
+  if (!hasDate(product.expiry)) return { number: '?', label: 'date', approx: false, cls: 'pending' };
+  const days = daysUntil(product.expiry, today);
+  const approx = kind === 'estimee' || kind === 'congele';
+  if (days < 0) {
+    const late = -days;
+    return late > 60
+      ? { number: Math.round(late / 30.4), label: 'mois passés', approx, cls: status }
+      : { number: late, label: late > 1 ? 'jours passés' : 'jour passé', approx, cls: status };
+  }
+  if (days === 0) return { number: 0, label: 'dernier jour', approx, cls: status };
+  if (days > 60) return { number: Math.round(days / 30.4), label: 'mois', approx, cls: status };
+  return { number: days > 999 ? '999+' : days, label: days > 1 ? 'jours' : 'jour', approx, cls: status };
+}
+
+/** Situation transmise à Claude, ex. « au placard depuis 8 mois ». */
+export function promptStock(product, today = new Date()) {
+  const at = locationOf(product.location).at;
+  const kind = dateKindOf(product);
+  if (kind === 'aucune') return `${at} depuis ${durationText(ageInDays(product, today))} (pas de date)`;
+  if (!hasDate(product.expiry)) return `${at}, date de péremption non renseignée`;
+  const days = daysUntil(product.expiry, today);
+  switch (kind) {
+    case 'ddm':
+      return days < 0 ? `${at}, DDM dépassée depuis ${days * -1} j (souvent encore consommable)` : `${at}, à consommer de préférence d'ici ${durationText(days)}`;
+    case 'estimee':
+      return days < 0 ? `${at}, date estimée dépassée : à vérifier avant usage` : `${at}, se garde encore environ ${durationText(days)}`;
+    case 'congele':
+      return `${at} depuis ${durationText(ageInDays(product, today))}, ${days < 0 ? 'durée conseillée dépassée : à utiliser au plus vite' : `à utiliser d'ici ${durationText(days)}`} (à décongeler)`;
+    default:
+      if (days < 0) return `${at}, date limite dépassée depuis ${-days} j`;
+      if (days === 0) return `${at}, expire aujourd'hui`;
+      return `${at}, expire dans ${days === 1 ? '1 j' : `${days} j`}`;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -589,6 +802,7 @@ export const ORIGINS = [
   { id: 'vietnamienne', label: 'Vietnamienne', emoji: '🇻🇳' },
   { id: 'coreenne', label: 'Coréenne', emoji: '🇰🇷' },
   { id: 'mexicaine', label: 'Mexicaine', emoji: '🇲🇽' },
+  { id: 'bresilienne', label: 'Brésilienne', emoji: '🇧🇷' },
   { id: 'americaine', label: 'Américaine', emoji: '🇺🇸' },
   { id: 'africaine', label: 'Africaine', emoji: '🌍' }
 ];
@@ -604,7 +818,8 @@ Règles :
 - Les basiques du placard sont supposés disponibles (sel, poivre, huiles, vinaigre, farine, sucre, épices courantes, herbes séchées, ail, oignon, moutarde, bouillon cube) : source « placard ».
 - Tout autre ingrédient nécessaire est en source « a_acheter » ; limite-les au strict minimum (2 au maximum par recette, sauf si les contraintes en autorisent davantage).
 - Pour chaque ingrédient venant du frigo, renseigne ref_stock avec la référence exacte (ex. « P3 ») ; pour la liste de courses, source « courses ».
-- Sécurité alimentaire : un produit dont la date est dépassée ne peut être utilisé que s'il s'agit d'une DDM (épicerie sèche, conserves, biscuits, pâtes…) après vérification de son aspect, et tu le signales dans le résumé. N'utilise jamais une viande, un poisson, un produit laitier frais ou un plat traiteur dont la date est dépassée.
+- Pense aussi aux produits présents depuis longtemps (placard, congélateur) pour éviter qu'ils soient oubliés. Un produit du congélateur doit être décongelé : indique-le dans les étapes.
+- Sécurité alimentaire : une date limite (DLC) dépassée interdit le produit ; un produit dont seule la DDM est dépassée ne peut être utilisé que s'il s'agit d'une DDM (épicerie sèche, conserves, biscuits, pâtes…) après vérification de son aspect, et tu le signales dans le résumé. N'utilise jamais une viande, un poisson, un produit laitier frais ou un plat traiteur dont la date est dépassée.
 - Temps réalistes (préparation + cuisson). Respecte le nombre de personnes demandé ; en batch cooking, prévois 2 à 3 repas pour ce nombre de personnes et indique le total dans portions.
 - Pour chaque ingrédient, donne la quantité en texte (quantite) et, si elle est chiffrable, sa valeur numérique (valeur) et son unité (unite : g, kg, ml, cl, L, c. à soupe, c. à café, ou le nom de l'unité comme « pot », vide pour des pièces). valeur = 0 si non chiffrable (« une pincée »).
 - regime : « vegan » si aucun produit d'origine animale, « vegetarien » si ni viande ni poisson ni fruits de mer (œufs et laitages autorisés), sinon « omnivore ». Sois strict (bouillon, gélatine, anchois comptent).
@@ -794,7 +1009,7 @@ export async function generateRecipes({ key, model, priority, others, shopping, 
     refs.set(`P${index}`, p.id);
     const parts = [`[P${index}] ${p.name}`];
     if (quantityLabel(p)) parts.push(`quantité : ${quantityLabel(p)}`);
-    parts.push(category(p.category).label.toLowerCase(), promptExpiry(p.expiry));
+    parts.push(category(p.category).label.toLowerCase(), promptStock(p));
     return `- ${parts.join(' – ')}`;
   };
   const priorityLines = priority.map(describe);
@@ -808,7 +1023,7 @@ export async function generateRecipes({ key, model, priority, others, shopping, 
     'PRODUITS À UTILISER EN PRIORITÉ (proches de leur date) :',
     priorityLines.length ? priorityLines.join('\n') : '(aucun : pioche librement dans le stock)',
     '',
-    'AUTRES PRODUITS DISPONIBLES AU FRIGO / PLACARD :',
+    'AUTRES PRODUITS DISPONIBLES À LA MAISON (frigo, congélateur, placard, fruits et légumes) :',
     otherLines.length ? otherLines.join('\n') : '(aucun)',
     '',
     'LISTE DE COURSES (articles prévus ou achetés, utilisables) :',
@@ -944,6 +1159,7 @@ Liste uniquement les produits alimentaires et les boissons achetés.
 - Développe les abréviations en un nom clair en français (ex. « PDT CONSO 2KG » → nom « Pommes de terre », contenance « 2 kg »).
 - nombre : quantité achetée de ce produit (ex. ligne « 2 x 1,19 » ou ligne répétée → 2). Regroupe les lignes identiques.
 - contenance : poids ou volume d'une unité s'il est indiqué (« 500 g », « 1 L »), sinon chaîne vide.
+- lieu : où ranger le produit à la maison : « frigo » (produits frais), « congelateur » (surgelés), « placard » (épicerie, conserves, boissons, produits secs), « fruits » (fruits et légumes qui se gardent hors du frigo : bananes, pommes de terre, oignons…).
 - Si les photos se chevauchent, ne compte pas deux fois la même ligne.
 - Si la photo n'est pas un ticket de caisse, renvoie une liste vide.`
   });
@@ -965,9 +1181,10 @@ Liste uniquement les produits alimentaires et les boissons achetés.
                 texte_ticket: { type: 'string', description: 'Libellé tel qu\'imprimé sur le ticket.' },
                 categorie: { type: 'string', enum: categoryIds },
                 nombre: { type: 'integer', description: "Nombre d'unités achetées (1 par défaut)." },
-                contenance: { type: 'string', description: 'Poids ou volume d\'une unité, sinon chaîne vide.' }
+                contenance: { type: 'string', description: 'Poids ou volume d\'une unité, sinon chaîne vide.' },
+                lieu: { type: 'string', enum: ['frigo', 'congelateur', 'placard', 'fruits'] }
               },
-              required: ['nom', 'texte_ticket', 'categorie', 'nombre', 'contenance']
+              required: ['nom', 'texte_ticket', 'categorie', 'nombre', 'contenance', 'lieu']
             }
           }
         },
@@ -986,7 +1203,8 @@ Liste uniquement les produits alimentaires et les boissons achetés.
       receiptText: (item.texte_ticket ?? '').trim(),
       category: categoryIds.includes(item.categorie) ? item.categorie : 'autre',
       count: Math.min(99, Math.max(1, Math.round(Number(item.nombre) || 1))),
-      quantity: (item.contenance ?? '').trim()
+      quantity: (item.contenance ?? '').trim(),
+      location: LOCATIONS.some((l) => l.id === item.lieu) ? item.lieu : 'frigo'
     }));
 }
 

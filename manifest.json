@@ -1,7 +1,7 @@
 {
-  "name": "Frigo partagé",
-  "short_name": "Frigo",
-  "description": "Dates de péremption, recettes anti-gaspillage et liste de courses partagées à deux.",
+  "name": "Kookia",
+  "short_name": "Kookia",
+  "description": "Le stock de nourriture de la maison, partagé à deux : frigo, congélateur, placard, fruits et légumes.",
   "lang": "fr",
   "start_url": "./",
   "scope": "./",
@@ -10,7 +10,16 @@
   "background_color": "#F2F5F3",
   "theme_color": "#2A7557",
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }

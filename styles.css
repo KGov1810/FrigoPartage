@@ -1,4 +1,4 @@
-/* Frigo partagé — blanc de frigo, vert herbe, compteurs de jours façon magnet. */
+/* Kookia — fond clair et frais, vert herbe, compteurs de jours façon magnet. */
 
 :root {
   --herb: #2A7557;
@@ -646,3 +646,49 @@ h2.section.pending { color: var(--herb-strong); }
   font-size: 15px; font-weight: 600; color: var(--ink);
 }
 .origin-chip[aria-pressed="true"] { background: var(--herb-soft); border-color: var(--herb); color: var(--herb-strong); }
+
+/* ---------- Stock de la maison : lieux, ancienneté, fruits et légumes ---------- */
+
+.location-filter { padding: 0 0 8px; margin: 0 -16px 4px; padding-left: 16px; padding-right: 16px; }
+.filter-chip { gap: 6px; border: 1.5px solid transparent; font-weight: 600; min-height: 38px; }
+.filter-chip svg { width: 18px; height: 18px; }
+.filter-chip i { font-style: normal; font-weight: 700; color: var(--muted); font-size: 13px; }
+.filter-chip[aria-pressed="true"] { background: var(--herb-soft); border-color: var(--herb); color: var(--herb-strong); }
+.filter-chip[aria-pressed="true"] i { color: var(--herb-strong); }
+
+.days.age { background: var(--surface-2); color: var(--muted); transform: rotate(1deg); }
+.days.old { background: color-mix(in srgb, var(--apricot) 22%, var(--surface)); color: var(--apricot); transform: rotate(-1deg); }
+.days small { text-align: center; }
+h2.section.old { color: var(--apricot); }
+.expiry-status.old, .expiry-status.age { color: var(--muted); }
+.empty.small { padding: 18px 8px; }
+
+.location-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 6px 16px 14px; }
+.location-grid button {
+  display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 8px 12px; border-radius: 12px;
+  background: var(--surface-2); font-weight: 600; font-size: 15px; text-align: left; border: 1.5px solid transparent;
+}
+.location-grid button svg { width: 20px; height: 20px; color: var(--muted); }
+.location-grid button[aria-pressed="true"] { background: var(--herb-soft); border-color: var(--herb); color: var(--herb-strong); }
+.location-grid button[aria-pressed="true"] svg { color: var(--herb-strong); }
+.group > .segmented:first-of-type { margin-top: 4px; }
+
+.produce-search { margin: 4px 0 10px; }
+.produce-grid { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 12px; }
+.produce-chip {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 42px; padding: 6px 14px;
+  border-radius: 999px; background: var(--surface); border: 1.5px solid var(--line); font-size: 15px; font-weight: 600;
+}
+.produce-chip span { font-size: 20px; line-height: 1; }
+.produce-chip b {
+  min-width: 22px; height: 22px; border-radius: 11px; padding: 0 6px; margin-left: 2px;
+  background: var(--herb); color: var(--on-accent); font-size: 13px; line-height: 22px; text-align: center;
+}
+.produce-chip.custom { border-style: dashed; color: var(--herb); }
+.produce-chip.custom svg { width: 18px; height: 18px; }
+
+.shop-text small.in-stock { color: var(--apricot); font-weight: 600; }
+.receipt-location {
+  align-self: flex-start; min-height: 32px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); color: var(--herb); font-weight: 600; font-size: 14px; padding: 0 8px;
+}
